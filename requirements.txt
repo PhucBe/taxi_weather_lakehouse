@@ -1,0 +1,6 @@
+boto3
+PyYAML
+python-dotenv
+redshift-connector
+dbt-core==1.11.8
+dbt-redshift==1.10.1
