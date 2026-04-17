@@ -1,5 +1,7 @@
 boto3
 PyYAML
+pandas
+pyarrow
 python-dotenv
 redshift-connector
 dbt-core==1.11.8

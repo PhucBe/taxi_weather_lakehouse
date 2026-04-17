@@ -37,14 +37,14 @@ def build_tlc_parquet_url(config: dict[str, Any], year_month: str) -> str:
 def build_output_path(config: dict[str, Any], year_month: str) -> Path:
     """
     Tạo đường dẫn local để lưu taxi parquet theo partition:
-    data/raw/taxi/year=2023/month=01/yellow_tripdata_2023-01.parquet
+    data/raw/taxi/parquet/year=2023/month=01/yellow_tripdata_2023-01.parquet
     """
     year, month = _validate_year_month(year_month)
 
     taxi_dir = Path(config["paths"]["taxi_dir"])
     filename = f"yellow_tripdata_{year_month}.parquet"
 
-    return taxi_dir / f"year={year}" / f"month={month}" / filename
+    return taxi_dir / "parquet" / f"year={year}" / f"month={month}" / filename
 
 
 def download_file(

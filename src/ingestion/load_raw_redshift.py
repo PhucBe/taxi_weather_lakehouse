@@ -9,9 +9,10 @@ from src.common.utils import sanitize_identifier
 
 
 # Ghi nhớ các bảng đã truncate trong một lần chạy process hiện tại.
-# Mục đích: khi loop nhiều file taxi parquet (2023-01, 2023-02, 2023-03),
+# Mục đích: nếu load nhiều file taxi CSV (2023-01, 2023-02, 2023-03),
 # bảng raw_taxi_trips chỉ bị truncate 1 lần ở đầu run, không bị xóa lại ở mỗi tháng.
 _TRUNCATED_TABLES: set[str] = set()
+
 
 def reset_truncate_state() -> None:
     """Reset trạng thái truncate giữa các lần chạy pipeline."""
@@ -40,6 +41,16 @@ def _execute_sql(conn, sql: str) -> None:
         cur.execute(sql)
 
 
+def _require_existing_file(path: str | Path, label: str) -> Path:
+    """Đảm bảo file local tồn tại trước khi load."""
+    file_path = Path(path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"{label} not found: {file_path}")
+    if not file_path.is_file():
+        raise ValueError(f"{label} is not a file: {file_path}")
+    return file_path
+
+
 def create_schema_if_not_exists(conn, schema_name: str, logger) -> None:
     """Đảm bảo schema raw tồn tại."""
     schema_name = sanitize_identifier(schema_name)
@@ -57,7 +68,7 @@ def _truncate_table_once_if_needed(
 ) -> None:
     """
     Truncate bảng đúng 1 lần trong 1 run nếu config yêu cầu.
-    Điều này đặc biệt quan trọng với taxi parquet vì load theo nhiều tháng.
+    Điều này đặc biệt quan trọng khi taxi load theo nhiều tháng.
     """
     if not truncate_before_load:
         return
@@ -88,7 +99,9 @@ def _build_create_table_sql(
     schema_name = sanitize_identifier(schema_name)
     table_name = sanitize_identifier(table_name)
 
-    columns_sql = ",\n    ".join([f"{sanitize_identifier(col)} {dtype}" for col, dtype in columns])
+    columns_sql = ",\n    ".join(
+        [f"{sanitize_identifier(col)} {dtype}" for col, dtype in columns]
+    )
 
     return f"""
     create table if not exists {schema_name}.{table_name} (
@@ -99,29 +112,30 @@ def _build_create_table_sql(
 
 def create_taxi_raw_table_if_not_exists(conn, schema_name: str, table_name: str, logger) -> None:
     """
-    Tạo bảng raw taxi.
-    Thứ tự cột bám theo raw taxi columns đã chốt cho Project 2.
+    Tạo bảng raw taxi theo schema CSV chuẩn hóa.
+
+    Thứ tự cột phải khớp với file CSV do prepare_taxi_flat_file.py tạo ra.
     """
     columns = [
-        ("vendorid", "integer"),
+        ("vendorid", "bigint"),
         ("tpep_pickup_datetime", "timestamp"),
         ("tpep_dropoff_datetime", "timestamp"),
-        ("passenger_count", "decimal(10,2)"),
+        ("passenger_count", "double precision"),
         ("trip_distance", "double precision"),
-        ("ratecodeid", "decimal(10,2)"),
+        ("ratecodeid", "double precision"),
         ("store_and_fwd_flag", "varchar(10)"),
-        ("pulocationid", "integer"),
-        ("dolocationid", "integer"),
-        ("payment_type", "integer"),
-        ("fare_amount", "decimal(18,2)"),
-        ("extra", "decimal(18,2)"),
-        ("mta_tax", "decimal(18,2)"),
-        ("tip_amount", "decimal(18,2)"),
-        ("tolls_amount", "decimal(18,2)"),
-        ("improvement_surcharge", "decimal(18,2)"),
-        ("total_amount", "decimal(18,2)"),
-        ("congestion_surcharge", "decimal(18,2)"),
-        ("airport_fee", "decimal(18,2)"),
+        ("pulocationid", "bigint"),
+        ("dolocationid", "bigint"),
+        ("payment_type", "bigint"),
+        ("fare_amount", "double precision"),
+        ("extra", "double precision"),
+        ("mta_tax", "double precision"),
+        ("tip_amount", "double precision"),
+        ("tolls_amount", "double precision"),
+        ("improvement_surcharge", "double precision"),
+        ("total_amount", "double precision"),
+        ("congestion_surcharge", "double precision"),
+        ("airport_fee", "double precision"),
     ]
 
     logger.info("Ensuring raw taxi table exists: %s.%s", schema_name, table_name)
@@ -132,7 +146,7 @@ def create_taxi_raw_table_if_not_exists(conn, schema_name: str, table_name: str,
 def create_weather_raw_table_if_not_exists(conn, schema_name: str, table_name: str, logger) -> None:
     """
     Tạo bảng raw weather daily.
-    Dùng tên cột chuẩn hóa, mapping theo thứ tự CSV weather flat file.
+    Thứ tự cột phải khớp với weather flat CSV.
     """
     columns = [
         ("date", "date"),
@@ -151,7 +165,7 @@ def create_weather_raw_table_if_not_exists(conn, schema_name: str, table_name: s
 def create_zone_raw_table_if_not_exists(conn, schema_name: str, table_name: str, logger) -> None:
     """
     Tạo bảng raw zone lookup.
-    Dùng tên cột chuẩn hóa, mapping theo thứ tự CSV zone lookup.
+    Thứ tự cột phải khớp với zone lookup CSV.
     """
     columns = [
         ("location_id", "integer"),
@@ -168,33 +182,6 @@ def create_zone_raw_table_if_not_exists(conn, schema_name: str, table_name: str,
 # =========================
 # COPY helpers
 # =========================
-def copy_parquet_from_s3_to_redshift(
-    conn,
-    schema_name: str,
-    table_name: str,
-    bucket_name: str,
-    s3_key: str,
-    iam_role_arn: str,
-    region: str,
-    logger,
-) -> None:
-    """COPY Parquet từ S3 vào Redshift."""
-    schema_name = sanitize_identifier(schema_name)
-    table_name = sanitize_identifier(table_name)
-    s3_uri = f"s3://{bucket_name}/{s3_key}"
-
-    sql = f"""
-    copy {schema_name}.{table_name}
-    from '{s3_uri}'
-    iam_role '{iam_role_arn}'
-    region '{region}'
-    format as parquet;
-    """
-
-    logger.info("COPY PARQUET into %s.%s from %s", schema_name, table_name, s3_uri)
-    _execute_sql(conn, sql)
-
-
 def copy_csv_from_s3_to_redshift(
     conn,
     schema_name: str,
@@ -234,21 +221,25 @@ def copy_csv_from_s3_to_redshift(
 # =========================
 # Public orchestration helpers
 # =========================
-def load_taxi_parquet_to_redshift_raw(
+def load_taxi_csv_to_redshift_raw(
     config: dict,
+    local_csv_path: str | Path,
     raw_table: str,
     bucket_name: str,
     s3_key: str,
     logger,
 ) -> None:
     """
-    Load 1 file taxi parquet từ S3 vào bảng raw taxi trong Redshift.
-    Nếu config truncate_before_load=True thì chỉ truncate 1 lần cho cả run.
+    Load taxi CSV từ S3 vào bảng raw taxi trong Redshift.
+    local_csv_path được dùng để fail sớm nếu file local chưa được tạo thành công.
     """
+    local_csv_path = _require_existing_file(local_csv_path, "Taxi CSV")
+
     conn = get_redshift_connection(config)
 
     try:
         schema_name = config["redshift"]["schema_raw"]
+        delimiter = config["ingestion"]["csv_delimiter"]
 
         create_schema_if_not_exists(conn, schema_name=schema_name, logger=logger)
         create_taxi_raw_table_if_not_exists(
@@ -266,7 +257,7 @@ def load_taxi_parquet_to_redshift_raw(
             logger=logger,
         )
 
-        copy_parquet_from_s3_to_redshift(
+        copy_csv_from_s3_to_redshift(
             conn=conn,
             schema_name=schema_name,
             table_name=raw_table,
@@ -274,6 +265,7 @@ def load_taxi_parquet_to_redshift_raw(
             s3_key=s3_key,
             iam_role_arn=config["redshift"]["iam_role_arn"],
             region=config["aws"]["region"],
+            delimiter=delimiter,
             logger=logger,
         )
     finally:
@@ -292,9 +284,7 @@ def load_weather_csv_to_redshift_raw(
     Load weather daily CSV từ S3 vào bảng raw weather trong Redshift.
     local_csv_path được dùng để fail sớm nếu file local chưa được tạo thành công.
     """
-    local_csv_path = Path(local_csv_path)
-    if not local_csv_path.exists():
-        raise FileNotFoundError(f"Weather CSV not found: {local_csv_path}")
+    local_csv_path = _require_existing_file(local_csv_path, "Weather CSV")
 
     conn = get_redshift_connection(config)
 
@@ -345,9 +335,7 @@ def load_zone_csv_to_redshift_raw(
     Load zone lookup CSV từ S3 vào bảng raw zone trong Redshift.
     local_csv_path được dùng để fail sớm nếu file local chưa được tải thành công.
     """
-    local_csv_path = Path(local_csv_path)
-    if not local_csv_path.exists():
-        raise FileNotFoundError(f"Zone lookup CSV not found: {local_csv_path}")
+    local_csv_path = _require_existing_file(local_csv_path, "Zone lookup CSV")
 
     conn = get_redshift_connection(config)
 

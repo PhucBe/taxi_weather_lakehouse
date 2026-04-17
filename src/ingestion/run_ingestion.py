@@ -12,11 +12,12 @@ from src.common.utils import build_s3_key, ensure_directory, today_str
 from src.ingestion.fetch_tlc_parquet import fetch_tlc_parquets
 from src.ingestion.fetch_weather_api import fetch_weather_raw
 from src.ingestion.fetch_zone_lookup import fetch_zone_lookup
+from src.ingestion.prepare_taxi_flat_file import prepare_taxi_flat_files
 from src.ingestion.prepare_weather_flat_file import prepare_weather_flat_file
 from src.ingestion.upload_to_s3 import upload_file_to_s3
 from src.ingestion.load_raw_redshift import (
     reset_truncate_state,
-    load_taxi_parquet_to_redshift_raw,
+    load_taxi_csv_to_redshift_raw,
     load_weather_csv_to_redshift_raw,
     load_zone_csv_to_redshift_raw,
 )
@@ -103,6 +104,10 @@ def main() -> None:
         log_dir=config["paths"]["log_dir"],
     )
 
+    logger.info("=" * 50)
+    logger.info("=== START INGESTION ===")
+    logger.info("=" * 50)
+
     logger.info(
         "Starting raw ingestion | project=%s | env=%s | load_date=%s | year_months=%s",
         config["project"]["name"],
@@ -119,15 +124,24 @@ def main() -> None:
 
     # 2) Fetch taxi parquet files from web -> local
     logger.info("Fetching NYC TLC taxi parquet files...")
-    taxi_files = fetch_tlc_parquets(
+    taxi_parquet_files = fetch_tlc_parquets(
         config=config,
         year_months=year_months,
         logger=logger,
     )
-    taxi_files = _normalize_taxi_files(taxi_files)
-    logger.info("Fetched %s taxi parquet file(s).", len(taxi_files))
+    taxi_parquet_files = _normalize_taxi_files(taxi_parquet_files)
+    logger.info("Fetched %s taxi parquet file(s).", len(taxi_parquet_files))
 
-    # 3) Fetch weather raw from API -> local json / in-memory payload
+    # 3) Prepare taxi flat CSV files from local parquet
+    logger.info("Preparing taxi flat CSV files...")
+    taxi_csv_files = prepare_taxi_flat_files(
+        config=config,
+        taxi_files=taxi_parquet_files,
+        logger=logger,
+    )
+    logger.info("Prepared %s taxi flat CSV file(s).", len(taxi_csv_files))
+
+    # 4) Fetch weather raw from API -> local json / in-memory payload
     logger.info("Fetching weather raw data from API...")
     weather_raw = fetch_weather_raw(
         config=config,
@@ -135,7 +149,7 @@ def main() -> None:
         logger=logger,
     )
 
-    # 4) Flatten weather raw -> local CSV
+    # 5) Flatten weather raw -> local CSV
     logger.info("Preparing flattened weather CSV...")
     weather_csv_path = _require_existing_file(
         prepare_weather_flat_file(
@@ -146,7 +160,7 @@ def main() -> None:
         "Flattened weather CSV",
     )
 
-    # 5) Fetch zone lookup CSV -> local
+    # 6) Fetch zone lookup CSV -> local
     logger.info("Fetching taxi zone lookup CSV...")
     zone_csv_path = _require_existing_file(
         fetch_zone_lookup(
@@ -156,14 +170,18 @@ def main() -> None:
         "Zone lookup CSV",
     )
 
+    logger.info("=" * 50)
+    logger.info("=== START RAW VALIDATION ===")
+    logger.info("=" * 50)
+
     bucket_name = config["aws"]["bucket_name"]
     region = config["aws"]["region"]
 
-    # 6) Upload taxi parquet files -> S3
-    logger.info("Uploading taxi parquet files to S3...")
+    # 7) Upload taxi CSV files -> S3
+    logger.info("Uploading taxi flat CSV files to S3...")
     taxi_s3_objects: list[dict[str, str]] = []
 
-    for item in taxi_files:
+    for item in taxi_csv_files:
         s3_key = build_s3_key(
             prefix=config["aws"]["s3_prefix_taxi"],
             filename=item["filename"],
@@ -187,7 +205,7 @@ def main() -> None:
             }
         )
 
-    # 7) Upload weather CSV -> S3
+    # 8) Upload weather CSV -> S3
     logger.info("Uploading weather CSV to S3...")
     weather_s3_key = build_s3_key(
         prefix=config["aws"]["s3_prefix_weather"],
@@ -202,7 +220,7 @@ def main() -> None:
         logger=logger,
     )
 
-    # 8) Upload zone CSV -> S3
+    # 9) Upload zone CSV -> S3
     logger.info("Uploading zone lookup CSV to S3...")
     zone_s3_key = build_s3_key(
         prefix=config["aws"]["s3_prefix_zone"],
@@ -217,18 +235,19 @@ def main() -> None:
         logger=logger,
     )
 
-    # 9) Load taxi parquet -> Redshift raw
-    logger.info("Loading taxi parquet files from S3 into Redshift raw table...")
+    # 10) Load taxi CSV -> Redshift raw
+    logger.info("Loading taxi CSV files from S3 into Redshift raw table...")
     for item in taxi_s3_objects:
-        load_taxi_parquet_to_redshift_raw(
+        load_taxi_csv_to_redshift_raw(
             config=config,
+            local_csv_path=item["local_path"],
             raw_table=config["redshift"]["table_raw_taxi"],
             bucket_name=bucket_name,
             s3_key=item["s3_key"],
             logger=logger,
         )
 
-    # 10) Load weather CSV -> Redshift raw
+    # 11) Load weather CSV -> Redshift raw
     logger.info("Loading weather CSV from S3 into Redshift raw table...")
     load_weather_csv_to_redshift_raw(
         config=config,
@@ -239,7 +258,7 @@ def main() -> None:
         logger=logger,
     )
 
-    # 11) Load zone CSV -> Redshift raw
+    # 12) Load zone CSV -> Redshift raw
     logger.info("Loading zone CSV from S3 into Redshift raw table...")
     load_zone_csv_to_redshift_raw(
         config=config,
@@ -251,11 +270,15 @@ def main() -> None:
     )
 
     logger.info(
-        "Raw ingestion finished successfully | taxi_files=%s | weather_s3_uri=%s | zone_s3_uri=%s",
+        "Raw ingestion finished successfully | taxi_csv_files=%s | weather_s3_uri=%s | zone_s3_uri=%s",
         len(taxi_s3_objects),
         weather_s3_uri,
         zone_s3_uri,
     )
+
+    logger.info("=" * 50)
+    logger.info("=== INGESTION FINISHED SUCCESSFULLY ===")
+    logger.info("=" * 50)
 
 
 if __name__ == "__main__":
