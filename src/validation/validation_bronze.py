@@ -225,7 +225,8 @@ def build_spark(app_name: str = "validation_bronze") -> SparkSession:
     spark = (
         SparkSession.builder
         .appName(app_name)
-        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.driver.memory", "4g")
+        .config("spark.sql.shuffle.partitions", "4")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")

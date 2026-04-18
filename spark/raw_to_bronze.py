@@ -202,7 +202,8 @@ def build_spark(app_name: str = "raw_to_bronze") -> SparkSession:
     spark = (
         SparkSession.builder
         .appName(app_name)
-        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.driver.memory", "4g")
+        .config("spark.sql.shuffle.partitions", "4")
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic")
         .getOrCreate()
     )
