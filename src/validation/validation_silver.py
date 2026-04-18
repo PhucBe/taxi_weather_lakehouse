@@ -3,23 +3,24 @@ from __future__ import annotations
 # =========================================================
 # validation_silver.py
 # ---------------------------------------------------------
-# Mục tiêu:
+# Mục tiêu phiên bản mới:
 # - Kiểm tra layer silver sau khi job Spark bronze_to_silver chạy xong
-# - Kiểm tra path output có tồn tại không
-# - Kiểm tra có file parquet thật hay không
-# - Kiểm tra bộ cột có đúng như thiết kế không
-# - So sánh row count giữa bronze và silver base
-# - Kiểm tra partition taxi / weather / enriched
-# - Kiểm tra null / duplicate / key uniqueness
-# - Kiểm tra logic thời gian của taxi silver
-# - Kiểm tra join completeness của bảng enriched
+# - Silver hiện chỉ còn 3 bảng base:
+#     + silver_taxi_trips
+#     + silver_weather_daily
+#     + silver_zone_lookup
+# - KHÔNG còn bảng silver_taxi_trips_enriched
 #
-# Lưu ý:
-# - Đây là validation kỹ thuật + business rules cơ bản của silver
-# - Chưa phải data quality framework đầy đủ kiểu quarantine / anomaly detection
+# Validation bao gồm:
+# - kiểm tra path output có tồn tại không
+# - kiểm tra có file parquet thật hay không
+# - kiểm tra bộ cột có đúng như thiết kế không
+# - so sánh row count giữa bronze và silver base
+# - kiểm tra partition taxi / weather
+# - kiểm tra null / duplicate / key uniqueness
+# - kiểm tra logic thời gian của taxi silver
 # =========================================================
 
-import glob
 from pathlib import Path
 from typing import Any
 
@@ -102,51 +103,6 @@ EXPECTED_SILVER_ZONE_COLUMNS = [
     "silver_loaded_at",
 ]
 
-EXPECTED_SILVER_TAXI_ENRICHED_COLUMNS = [
-    "trip_id",
-    "vendor_id",
-    "pickup_datetime",
-    "dropoff_datetime",
-    "pickup_date",
-    "pickup_year",
-    "pickup_month",
-    "pickup_hour",
-    "passenger_count",
-    "trip_distance",
-    "trip_duration_minutes",
-    "rate_code_id",
-    "store_and_fwd_flag",
-    "pickup_location_id",
-    "pickup_borough",
-    "pickup_zone",
-    "pickup_service_zone",
-    "dropoff_location_id",
-    "dropoff_borough",
-    "dropoff_zone",
-    "dropoff_service_zone",
-    "payment_type_code",
-    "fare_amount",
-    "extra_amount",
-    "mta_tax_amount",
-    "tip_amount",
-    "tolls_amount",
-    "improvement_surcharge_amount",
-    "congestion_surcharge_amount",
-    "airport_fee_amount",
-    "total_amount",
-    "weather_date",
-    "temperature_max",
-    "temperature_min",
-    "temperature_mean",
-    "precipitation_sum",
-    "snowfall_sum",
-    "is_rainy_day",
-    "is_snowy_day",
-    "source_file",
-    "bronze_loaded_at",
-    "silver_loaded_at",
-]
-
 
 # =========================================================
 # 2) HELPER FUNCTIONS
@@ -166,7 +122,7 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
 
     Bao gồm:
     - input bronze
-    - output silver
+    - output silver base
     """
     paths_cfg = config["paths"]
 
@@ -181,9 +137,6 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     silver_taxi_dir = _as_path(paths_cfg.get("silver_taxi_dir", silver_dir / "taxi_trips"))
     silver_weather_dir = _as_path(paths_cfg.get("silver_weather_dir", silver_dir / "weather_daily"))
     silver_zone_dir = _as_path(paths_cfg.get("silver_zone_dir", silver_dir / "zone_lookup"))
-    silver_taxi_enriched_dir = _as_path(
-        paths_cfg.get("silver_taxi_enriched_dir", silver_dir / "taxi_trips_enriched")
-    )
 
     return {
         "bronze_taxi_dir": bronze_taxi_dir,
@@ -192,7 +145,6 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
         "silver_taxi_dir": silver_taxi_dir,
         "silver_weather_dir": silver_weather_dir,
         "silver_zone_dir": silver_zone_dir,
-        "silver_taxi_enriched_dir": silver_taxi_enriched_dir,
     }
 
 
@@ -369,31 +321,6 @@ def validate_row_count_relation(
             )
 
 
-def validate_exact_row_count(
-    left_df: DataFrame,
-    right_df: DataFrame,
-    left_name: str,
-    right_name: str,
-    logger,
-) -> None:
-    """
-    Kiểm tra 2 dataset phải có row count bằng nhau.
-
-    Dùng cho:
-    - silver_taxi_trips vs silver_taxi_trips_enriched
-    """
-    left_count = _count_rows(left_df)
-    right_count = _count_rows(right_df)
-
-    logger.info("[%s] row_count=%s", left_name, left_count)
-    logger.info("[%s] row_count=%s", right_name, right_count)
-
-    if left_count != right_count:
-        raise ValueError(
-            f"Row count mismatch: {left_name}={left_count}, {right_name}={right_count}"
-        )
-
-
 def validate_unique_key(df: DataFrame, key_columns: list[str], dataset_name: str) -> None:
     """
     Kiểm tra key phải unique.
@@ -483,7 +410,7 @@ def validate_taxi_silver_time_logic(df: DataFrame) -> None:
 
 def validate_taxi_silver_derived_columns(df: DataFrame) -> None:
     """
-    Kiểm tra các cột dẫn xuất có khớp với pickup_date hay không:
+    Kiểm tra các cột dẫn xuất có khớp với pickup_date / pickup_datetime hay không:
     - pickup_year == year(pickup_date)
     - pickup_month == month(pickup_date)
     - pickup_hour == hour(pickup_datetime)
@@ -640,156 +567,7 @@ def validate_zone_silver_uniqueness(df: DataFrame) -> None:
 
 
 # =========================================================
-# 8) ENRICHED SILVER VALIDATION
-# =========================================================
-def validate_enriched_silver_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột taxi enriched đúng theo tên cột mong đợi.
-    """
-    _assert_columns_match_by_name(
-        df,
-        EXPECTED_SILVER_TAXI_ENRICHED_COLUMNS,
-        "silver_taxi_trips_enriched",
-    )
-    _log_schema(logger, "silver_taxi_trips_enriched", df)
-
-
-def validate_enriched_silver_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột cốt lõi của enriched không được null.
-
-    Lưu ý:
-    - Không ép weather columns phải non-null ở đây,
-      vì phần đó sẽ được kiểm bằng join completeness riêng.
-    """
-    null_counts = (
-        df.select(
-            F.sum(F.col("trip_id").isNull().cast("int")).alias("trip_id_nulls"),
-            F.sum(F.col("pickup_datetime").isNull().cast("int")).alias("pickup_datetime_nulls"),
-            F.sum(F.col("dropoff_datetime").isNull().cast("int")).alias("dropoff_datetime_nulls"),
-            F.sum(F.col("pickup_date").isNull().cast("int")).alias("pickup_date_nulls"),
-            F.sum(F.col("pickup_year").isNull().cast("int")).alias("pickup_year_nulls"),
-            F.sum(F.col("pickup_month").isNull().cast("int")).alias("pickup_month_nulls"),
-            F.sum(F.col("pickup_location_id").isNull().cast("int")).alias("pickup_location_id_nulls"),
-            F.sum(F.col("dropoff_location_id").isNull().cast("int")).alias("dropoff_location_id_nulls"),
-            F.sum(F.col("source_file").isNull().cast("int")).alias("source_file_nulls"),
-            F.sum(F.col("bronze_loaded_at").isNull().cast("int")).alias("bronze_loaded_at_nulls"),
-            F.sum(F.col("silver_loaded_at").isNull().cast("int")).alias("silver_loaded_at_nulls"),
-        )
-        .collect()[0]
-    )
-
-    for field_name, value in null_counts.asDict().items():
-        if value != 0:
-            raise ValueError(
-                f"[silver_taxi_trips_enriched] {field_name} must be 0 but got {value}"
-            )
-
-
-def validate_enriched_silver_uniqueness(df: DataFrame) -> None:
-    """
-    Bảng enriched vẫn ở grain 1 trip nên trip_id phải unique.
-    """
-    validate_unique_key(df, ["trip_id"], "silver_taxi_trips_enriched")
-
-
-def validate_enriched_row_count_matches_taxi(
-    taxi_df: DataFrame,
-    enriched_df: DataFrame,
-    logger,
-) -> None:
-    """
-    Enriched phải giữ nguyên grain trip-level nên row count phải bằng taxi silver.
-    """
-    validate_exact_row_count(
-        left_df=taxi_df,
-        right_df=enriched_df,
-        left_name="silver_taxi_trips",
-        right_name="silver_taxi_trips_enriched",
-        logger=logger,
-    )
-
-
-def validate_enriched_join_completeness(df: DataFrame) -> None:
-    """
-    Kiểm tra độ đầy đủ của join zone + weather trong bảng enriched.
-
-    Rule hiện tại:
-    - pickup_zone không được null nếu pickup_location_id có giá trị
-    - dropoff_zone không được null nếu dropoff_location_id có giá trị
-    - weather_date không được null nếu pickup_date có giá trị
-
-    Lưu ý:
-    - Rule này phù hợp với phạm vi dữ liệu hiện tại của project
-    - Nếu sau này bạn nạp taxi rộng hơn weather date range,
-      có thể đổi check weather thành warning thay vì fail
-    """
-    missing_pickup_zone_count = (
-        df.filter(
-            F.col("pickup_location_id").isNotNull() & F.col("pickup_zone").isNull()
-        ).count()
-    )
-    if missing_pickup_zone_count != 0:
-        raise ValueError(
-            f"[silver_taxi_trips_enriched] missing pickup zone rows: "
-            f"{missing_pickup_zone_count}"
-        )
-
-    missing_dropoff_zone_count = (
-        df.filter(
-            F.col("dropoff_location_id").isNotNull() & F.col("dropoff_zone").isNull()
-        ).count()
-    )
-    if missing_dropoff_zone_count != 0:
-        raise ValueError(
-            f"[silver_taxi_trips_enriched] missing dropoff zone rows: "
-            f"{missing_dropoff_zone_count}"
-        )
-
-    missing_weather_count = (
-        df.filter(
-            F.col("pickup_date").isNotNull() & F.col("weather_date").isNull()
-        ).count()
-    )
-    if missing_weather_count != 0:
-        raise ValueError(
-            f"[silver_taxi_trips_enriched] missing weather rows: {missing_weather_count}"
-        )
-
-
-def validate_enriched_silver_partitions(df: DataFrame, silver_path: Path, logger) -> None:
-    """
-    Kiểm tra partition enriched silver:
-    - có partition trong dữ liệu
-    - có partition directory trên disk
-    """
-    partition_rows = (
-        df.select("pickup_year", "pickup_month")
-        .distinct()
-        .orderBy("pickup_year", "pickup_month")
-        .collect()
-    )
-
-    partitions = [(row["pickup_year"], row["pickup_month"]) for row in partition_rows]
-    logger.info("[silver_taxi_trips_enriched] distinct partitions=%s", partitions)
-
-    if not partitions:
-        raise ValueError("[silver_taxi_trips_enriched] no partitions found in dataframe")
-
-    partition_dirs = sorted(silver_path.rglob("pickup_month=*"))
-    if not partition_dirs:
-        raise ValueError(
-            f"[silver_taxi_trips_enriched] no partition directories found in {silver_path}"
-        )
-
-    logger.info(
-        "[silver_taxi_trips_enriched] partition directory count=%s",
-        len(partition_dirs),
-    )
-
-
-# =========================================================
-# 9) MAIN
+# 8) MAIN
 # =========================================================
 def main() -> None:
     """
@@ -797,7 +575,6 @@ def main() -> None:
     - taxi silver
     - weather silver
     - zone silver
-    - enriched silver
     """
     config = load_app_config()
     paths = _resolve_paths(config)
@@ -865,13 +642,6 @@ def main() -> None:
             dataset_path=paths["silver_zone_dir"],
             logger=logger,
             label="silver_zone_lookup",
-        )
-
-        silver_taxi_enriched_df = read_parquet_dataset(
-            spark=spark,
-            dataset_path=paths["silver_taxi_enriched_dir"],
-            logger=logger,
-            label="silver_taxi_trips_enriched",
         )
 
         # -------------------------------------------------
@@ -946,29 +716,6 @@ def main() -> None:
 
         logger.info("silver_zone_lookup validation passed.")
 
-        # -------------------------------------------------
-        # ENRICHED SILVER VALIDATION
-        # -------------------------------------------------
-        logger.info("Validating silver_taxi_trips_enriched...")
-
-        validate_non_empty(silver_taxi_enriched_df, "silver_taxi_trips_enriched")
-        validate_enriched_silver_schema(silver_taxi_enriched_df, logger)
-        validate_enriched_silver_not_null(silver_taxi_enriched_df)
-        validate_enriched_silver_uniqueness(silver_taxi_enriched_df)
-        validate_enriched_row_count_matches_taxi(
-            taxi_df=silver_taxi_df,
-            enriched_df=silver_taxi_enriched_df,
-            logger=logger,
-        )
-        validate_enriched_join_completeness(silver_taxi_enriched_df)
-        validate_enriched_silver_partitions(
-            df=silver_taxi_enriched_df,
-            silver_path=paths["silver_taxi_enriched_dir"],
-            logger=logger,
-        )
-
-        logger.info("silver_taxi_trips_enriched validation passed.")
-
         logger.info("=" * 60)
         logger.info("SILVER VALIDATION FINISHED SUCCESSFULLY")
         logger.info("=" * 60)
@@ -978,7 +725,7 @@ def main() -> None:
 
 
 # =========================================================
-# 10) ENTRYPOINT
+# 9) ENTRYPOINT
 # =========================================================
 if __name__ == "__main__":
     main()

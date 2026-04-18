@@ -7,13 +7,12 @@
 -- - silver_taxi_trips
 -- - silver_weather_daily
 -- - silver_zone_lookup
--- - silver_taxi_trips_enriched
 --
 -- Purpose:
 -- - confirm row counts and date coverage
 -- - check key data quality rules
--- - verify enriched join completeness
--- - show a few analytics-ready outputs
+-- - verify partition/month coverage
+-- - show a few analytics-ready sanity outputs
 --
 -- Run in DuckDB:
 --   .read sql/checks/check_silver.sql
@@ -41,13 +40,6 @@ CREATE OR REPLACE VIEW silver_zone_lookup AS
 SELECT *
 FROM read_parquet(
     'data/silver/zone_lookup/**/*.parquet',
-    hive_partitioning = true
-);
-
-CREATE OR REPLACE VIEW silver_taxi_trips_enriched AS
-SELECT *
-FROM read_parquet(
-    'data/silver/taxi_trips_enriched/**/*.parquet',
     hive_partitioning = true
 );
 
@@ -84,14 +76,6 @@ SELECT
     NULL AS max_date
 FROM silver_zone_lookup
 
-UNION ALL
-
-SELECT
-    'silver_taxi_trips_enriched' AS dataset_name,
-    COUNT(*) AS row_count,
-    MIN(pickup_date) AS min_date,
-    MAX(pickup_date) AS max_date
-FROM silver_taxi_trips_enriched
 ORDER BY dataset_name;
 
 
@@ -115,9 +99,131 @@ ORDER BY
 
 
 -- =========================================================
--- 3) CORE DATA QUALITY CHECKS
+-- 3) WEATHER SILVER COVERAGE BY MONTH
 -- ---------------------------------------------------------
--- One compact query for the most important Silver rules
+-- Expectation:
+-- - only 2023-01, 2023-02, 2023-03
+-- =========================================================
+SELECT
+    weather_year,
+    weather_month,
+    COUNT(*) AS weather_day_count
+FROM silver_weather_daily
+GROUP BY
+    weather_year,
+    weather_month
+ORDER BY
+    weather_year,
+    weather_month;
+
+
+-- =========================================================
+-- X) SILVER OUT-OF-SCOPE CHECKS
+-- ---------------------------------------------------------
+-- Purpose:
+-- - bắt dữ liệu taxi / weather nằm ngoài phạm vi project
+-- - phạm vi hợp lệ hiện tại: 2023-01-01 đến 2023-03-31
+-- =========================================================
+
+-- ---------------------------------------------------------
+-- X.1) TAXI OUT-OF-SCOPE SUMMARY
+-- Expected:
+-- - tất cả phải = 0
+-- ---------------------------------------------------------
+SELECT
+    SUM(
+        CASE
+            WHEN pickup_date < DATE '2023-01-01'
+              OR pickup_date > DATE '2023-03-31'
+            THEN 1 ELSE 0
+        END
+    ) AS out_of_scope_taxi_date_rows,
+    SUM(
+        CASE
+            WHEN pickup_year <> 2023
+              OR pickup_month NOT IN (1, 2, 3)
+            THEN 1 ELSE 0
+        END
+    ) AS out_of_scope_taxi_partition_rows
+FROM silver_taxi_trips;
+
+
+-- ---------------------------------------------------------
+-- X.2) TAXI OUT-OF-SCOPE DETAILS
+-- Expected:
+-- - trả về 0 dòng
+-- ---------------------------------------------------------
+SELECT
+    pickup_date,
+    pickup_year,
+    pickup_month,
+    COUNT(*) AS row_count
+FROM silver_taxi_trips
+WHERE pickup_date < DATE '2023-01-01'
+   OR pickup_date > DATE '2023-03-31'
+   OR pickup_year <> 2023
+   OR pickup_month NOT IN (1, 2, 3)
+GROUP BY
+    pickup_date,
+    pickup_year,
+    pickup_month
+ORDER BY
+    pickup_date,
+    pickup_year,
+    pickup_month;
+
+
+-- ---------------------------------------------------------
+-- X.3) WEATHER OUT-OF-SCOPE SUMMARY
+-- Expected:
+-- - tất cả phải = 0
+-- ---------------------------------------------------------
+SELECT
+    SUM(
+        CASE
+            WHEN weather_date < DATE '2023-01-01'
+              OR weather_date > DATE '2023-03-31'
+            THEN 1 ELSE 0
+        END
+    ) AS out_of_scope_weather_date_rows,
+    SUM(
+        CASE
+            WHEN weather_year <> 2023
+              OR weather_month NOT IN (1, 2, 3)
+            THEN 1 ELSE 0
+        END
+    ) AS out_of_scope_weather_partition_rows
+FROM silver_weather_daily;
+
+
+-- ---------------------------------------------------------
+-- X.4) WEATHER OUT-OF-SCOPE DETAILS
+-- Expected:
+-- - trả về 0 dòng
+-- ---------------------------------------------------------
+SELECT
+    weather_date,
+    weather_year,
+    weather_month,
+    COUNT(*) AS row_count
+FROM silver_weather_daily
+WHERE weather_date < DATE '2023-01-01'
+   OR weather_date > DATE '2023-03-31'
+   OR weather_year <> 2023
+   OR weather_month NOT IN (1, 2, 3)
+GROUP BY
+    weather_date,
+    weather_year,
+    weather_month
+ORDER BY
+    weather_date,
+    weather_year,
+    weather_month;
+
+
+-- =========================================================
+-- 4) TAXI CORE DATA QUALITY CHECKS
+-- ---------------------------------------------------------
 -- Expectation:
 -- - all metrics should be 0
 -- =========================================================
@@ -125,15 +231,64 @@ SELECT
     SUM(CASE WHEN trip_id IS NULL THEN 1 ELSE 0 END) AS trip_id_nulls,
     SUM(CASE WHEN pickup_datetime IS NULL THEN 1 ELSE 0 END) AS pickup_datetime_nulls,
     SUM(CASE WHEN dropoff_datetime IS NULL THEN 1 ELSE 0 END) AS dropoff_datetime_nulls,
+    SUM(CASE WHEN pickup_date IS NULL THEN 1 ELSE 0 END) AS pickup_date_nulls,
+    SUM(CASE WHEN pickup_year IS NULL THEN 1 ELSE 0 END) AS pickup_year_nulls,
+    SUM(CASE WHEN pickup_month IS NULL THEN 1 ELSE 0 END) AS pickup_month_nulls,
+    SUM(CASE WHEN pickup_hour IS NULL THEN 1 ELSE 0 END) AS pickup_hour_nulls,
     SUM(CASE WHEN pickup_location_id IS NULL THEN 1 ELSE 0 END) AS pickup_location_id_nulls,
     SUM(CASE WHEN dropoff_location_id IS NULL THEN 1 ELSE 0 END) AS dropoff_location_id_nulls,
+    SUM(CASE WHEN source_file IS NULL THEN 1 ELSE 0 END) AS source_file_nulls,
+    SUM(CASE WHEN bronze_loaded_at IS NULL THEN 1 ELSE 0 END) AS bronze_loaded_at_nulls,
+    SUM(CASE WHEN silver_loaded_at IS NULL THEN 1 ELSE 0 END) AS silver_loaded_at_nulls,
     SUM(CASE WHEN pickup_datetime >= dropoff_datetime THEN 1 ELSE 0 END) AS bad_time_order_rows,
-    SUM(CASE WHEN trip_duration_minutes <= 0 THEN 1 ELSE 0 END) AS non_positive_duration_rows
+    SUM(CASE WHEN trip_duration_minutes <= 0 THEN 1 ELSE 0 END) AS non_positive_duration_rows,
+    SUM(CASE WHEN pickup_year <> YEAR(pickup_date) THEN 1 ELSE 0 END) AS bad_pickup_year_rows,
+    SUM(CASE WHEN pickup_month <> MONTH(pickup_date) THEN 1 ELSE 0 END) AS bad_pickup_month_rows,
+    SUM(CASE WHEN pickup_hour <> HOUR(pickup_datetime) THEN 1 ELSE 0 END) AS bad_pickup_hour_rows
 FROM silver_taxi_trips;
 
 
 -- =========================================================
--- 4) UNIQUENESS CHECKS
+-- 5) WEATHER CORE DATA QUALITY CHECKS
+-- ---------------------------------------------------------
+-- Expectation:
+-- - all metrics should be 0
+-- =========================================================
+SELECT
+    SUM(CASE WHEN weather_date IS NULL THEN 1 ELSE 0 END) AS weather_date_nulls,
+    SUM(CASE WHEN weather_year IS NULL THEN 1 ELSE 0 END) AS weather_year_nulls,
+    SUM(CASE WHEN weather_month IS NULL THEN 1 ELSE 0 END) AS weather_month_nulls,
+    SUM(CASE WHEN source_file IS NULL THEN 1 ELSE 0 END) AS source_file_nulls,
+    SUM(CASE WHEN bronze_loaded_at IS NULL THEN 1 ELSE 0 END) AS bronze_loaded_at_nulls,
+    SUM(CASE WHEN silver_loaded_at IS NULL THEN 1 ELSE 0 END) AS silver_loaded_at_nulls,
+    SUM(CASE WHEN weather_year <> YEAR(weather_date) THEN 1 ELSE 0 END) AS bad_weather_year_rows,
+    SUM(CASE WHEN weather_month <> MONTH(weather_date) THEN 1 ELSE 0 END) AS bad_weather_month_rows,
+    SUM(CASE WHEN precipitation_sum > 0 AND is_rainy_day = FALSE THEN 1 ELSE 0 END) AS bad_rain_flag_rows,
+    SUM(CASE WHEN precipitation_sum <= 0 AND is_rainy_day = TRUE THEN 1 ELSE 0 END) AS bad_non_rain_flag_rows,
+    SUM(CASE WHEN snowfall_sum > 0 AND is_snowy_day = FALSE THEN 1 ELSE 0 END) AS bad_snow_flag_rows,
+    SUM(CASE WHEN snowfall_sum <= 0 AND is_snowy_day = TRUE THEN 1 ELSE 0 END) AS bad_non_snow_flag_rows
+FROM silver_weather_daily;
+
+
+-- =========================================================
+-- 6) ZONE CORE DATA QUALITY CHECKS
+-- ---------------------------------------------------------
+-- Expectation:
+-- - all metrics should be 0
+-- =========================================================
+SELECT
+    SUM(CASE WHEN location_id IS NULL THEN 1 ELSE 0 END) AS location_id_nulls,
+    SUM(CASE WHEN source_file IS NULL THEN 1 ELSE 0 END) AS source_file_nulls,
+    SUM(CASE WHEN bronze_loaded_at IS NULL THEN 1 ELSE 0 END) AS bronze_loaded_at_nulls,
+    SUM(CASE WHEN silver_loaded_at IS NULL THEN 1 ELSE 0 END) AS silver_loaded_at_nulls,
+    SUM(CASE WHEN TRIM(COALESCE(borough, '')) = '' THEN 1 ELSE 0 END) AS blank_borough_rows,
+    SUM(CASE WHEN TRIM(COALESCE(zone, '')) = '' THEN 1 ELSE 0 END) AS blank_zone_rows,
+    SUM(CASE WHEN TRIM(COALESCE(service_zone, '')) = '' THEN 1 ELSE 0 END) AS blank_service_zone_rows
+FROM silver_zone_lookup;
+
+
+-- =========================================================
+-- 7) UNIQUENESS CHECKS
 -- ---------------------------------------------------------
 -- Expectation:
 -- - all duplicate counters should be 0
@@ -173,28 +328,42 @@ FROM taxi_dup, weather_dup, zone_dup;
 
 
 -- =========================================================
--- 5) ENRICHED CONSISTENCY CHECKS
+-- 8) TAXI VS WEATHER DATE COVERAGE
 -- ---------------------------------------------------------
--- Expectation:
--- - taxi_rows = enriched_rows
--- - row_diff = 0
--- - missing_* = 0
+-- Purpose:
+-- - confirm taxi dates all fall inside the available weather scope
+-- - useful before building Gold fact with weather FK
 -- =========================================================
 SELECT
-    (SELECT COUNT(*) FROM silver_taxi_trips) AS taxi_rows,
-    (SELECT COUNT(*) FROM silver_taxi_trips_enriched) AS enriched_rows,
-    (
-        (SELECT COUNT(*) FROM silver_taxi_trips_enriched)
-        - (SELECT COUNT(*) FROM silver_taxi_trips)
-    ) AS row_diff,
-    SUM(CASE WHEN pickup_location_id IS NOT NULL AND pickup_zone IS NULL THEN 1 ELSE 0 END) AS missing_pickup_zone_rows,
-    SUM(CASE WHEN dropoff_location_id IS NOT NULL AND dropoff_zone IS NULL THEN 1 ELSE 0 END) AS missing_dropoff_zone_rows,
-    SUM(CASE WHEN pickup_date IS NOT NULL AND weather_date IS NULL THEN 1 ELSE 0 END) AS missing_weather_rows
-FROM silver_taxi_trips_enriched;
+    COUNT(*) AS taxi_dates_without_weather
+FROM (
+    SELECT DISTINCT t.pickup_date
+    FROM silver_taxi_trips AS t
+    LEFT JOIN silver_weather_daily AS w
+        ON t.pickup_date = w.weather_date
+    WHERE w.weather_date IS NULL
+);
 
 
 -- =========================================================
--- 6) DAILY ANALYTICS SNAPSHOT
+-- 9) TAXI VS ZONE LOOKUP COVERAGE
+-- ---------------------------------------------------------
+-- Purpose:
+-- - confirm pickup/dropoff location ids can be resolved in zone lookup
+-- - useful before building Gold fact with zone FK
+-- =========================================================
+SELECT
+    SUM(CASE WHEN p.location_id IS NULL THEN 1 ELSE 0 END) AS missing_pickup_zone_rows,
+    SUM(CASE WHEN d.location_id IS NULL THEN 1 ELSE 0 END) AS missing_dropoff_zone_rows
+FROM silver_taxi_trips AS t
+LEFT JOIN silver_zone_lookup AS p
+    ON t.pickup_location_id = p.location_id
+LEFT JOIN silver_zone_lookup AS d
+    ON t.dropoff_location_id = d.location_id;
+
+
+-- =========================================================
+-- 10) DAILY ANALYTICS SNAPSHOT
 -- ---------------------------------------------------------
 -- A compact downstream-ready view of Silver usability
 -- =========================================================
@@ -204,37 +373,76 @@ SELECT
     ROUND(SUM(total_amount), 2) AS total_revenue,
     ROUND(AVG(trip_distance), 2) AS avg_trip_distance,
     ROUND(AVG(trip_duration_minutes), 2) AS avg_trip_duration_minutes
-FROM silver_taxi_trips_enriched
+FROM silver_taxi_trips
 GROUP BY pickup_date
 ORDER BY pickup_date
 LIMIT 31;
 
 
 -- =========================================================
--- 7) BUSINESS SNAPSHOT
+-- 11) PAYMENT MIX SNAPSHOT
 -- ---------------------------------------------------------
--- Two simple outputs that show enrichment is useful
+-- Simple sanity output before building serving marts
 -- =========================================================
-
--- 7A. Rainy vs non-rainy demand
 SELECT
-    is_rainy_day,
-    COUNT(*) AS trip_count,
-    ROUND(SUM(total_amount), 2) AS total_revenue,
-    ROUND(AVG(trip_distance), 2) AS avg_trip_distance
-FROM silver_taxi_trips_enriched
-GROUP BY is_rainy_day
-ORDER BY is_rainy_day;
-
--- 7B. Top pickup zones
-SELECT
-    pickup_borough,
-    pickup_zone,
+    pickup_date,
+    payment_type_code,
     COUNT(*) AS trip_count,
     ROUND(SUM(total_amount), 2) AS total_revenue
-FROM silver_taxi_trips_enriched
+FROM silver_taxi_trips
 GROUP BY
-    pickup_borough,
-    pickup_zone
+    pickup_date,
+    payment_type_code
+ORDER BY
+    pickup_date,
+    trip_count DESC,
+    payment_type_code
+LIMIT 50;
+
+
+-- =========================================================
+-- 12) TOP PICKUP LOCATION IDS
+-- ---------------------------------------------------------
+-- Silver chưa enrich zone text nữa, nên ở đây check theo ID.
+-- Việc đổi sang borough/zone name sẽ làm ở Gold / Serving.
+-- =========================================================
+SELECT
+    pickup_location_id,
+    COUNT(*) AS trip_count,
+    ROUND(SUM(total_amount), 2) AS total_revenue
+FROM silver_taxi_trips
+GROUP BY pickup_location_id
 ORDER BY trip_count DESC, total_revenue DESC
 LIMIT 15;
+
+
+-- =========================================================
+-- 13) WEATHER SNAPSHOT
+-- ---------------------------------------------------------
+-- Quick sanity output for weather daily dataset
+-- =========================================================
+SELECT
+    weather_date,
+    temperature_mean,
+    precipitation_sum,
+    snowfall_sum,
+    is_rainy_day,
+    is_snowy_day
+FROM silver_weather_daily
+ORDER BY weather_date
+LIMIT 31;
+
+
+-- =========================================================
+-- 14) ZONE LOOKUP SNAPSHOT
+-- ---------------------------------------------------------
+-- Quick sanity output for lookup dataset
+-- =========================================================
+SELECT
+    location_id,
+    borough,
+    zone,
+    service_zone
+FROM silver_zone_lookup
+ORDER BY location_id
+LIMIT 20;
