@@ -170,10 +170,6 @@ def main() -> None:
         "Zone lookup CSV",
     )
 
-    logger.info("=" * 50)
-    logger.info("=== START RAW VALIDATION ===")
-    logger.info("=" * 50)
-
     bucket_name = config["aws"]["bucket_name"]
     region = config["aws"]["region"]
 

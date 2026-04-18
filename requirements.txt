@@ -1,5 +1,6 @@
 boto3
 PyYAML
+duckdb
 pandas
 pyarrow
 python-dotenv
