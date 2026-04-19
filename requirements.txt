@@ -3,6 +3,7 @@ PyYAML
 duckdb
 pandas
 pyarrow
+pyspark==4.1.1
 python-dotenv
 redshift-connector
 dbt-core==1.11.8
