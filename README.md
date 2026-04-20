@@ -62,7 +62,7 @@ The data warehouse implements a star schema with `dim_weather`, `dim_date`, `dim
 
 Denormalized table with all dimensions for ad-hoc queries.
 
-![Flat Mart Schema](../../Resources/images/1_2_Flat_Mart.png)
+![Daily Demand Mart](docs/screenshots/8.png)
 
 - `Total trips`: Tổng số chuyến taxi trong khoảng thời gian được chọn
 
