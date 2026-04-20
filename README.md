@@ -61,16 +61,41 @@ The data warehouse implements a star schema with `dim_weather`, `dim_date`, `dim
 ### Daily Demand Mart
 
 Denormalized table with all dimensions for ad-hoc queries.
+```text
+            ┌──────────────────────────────────┐
+            │           column_name            │
+            ├──────────────────────────────────┤
+            │ pickup_date                      │
+            │ quarter_num                      │
+            │ month_name                       │
+            │ day_num_in_month                 │
+            │ day_of_week_num                  │
+            │ day_of_week_name                 │
+            │ is_weekend                       │
+            │ trip_count                       │
+            │ total_passenger_count            │
+            │ total_trip_distance              │
+            │ total_trip_duration_minutes      │
+            │ total_revenue                    │
+            │ total_fare_amount                │
+            │ total_tip_amount                 │
+            │ total_tolls_amount               │
+            │ avg_trip_distance                │
+            │ avg_trip_duration_minutes        │
+            │ avg_total_amount                 │
+            │ avg_fare_amount                  │
+            │ avg_tip_amount                   │
+            │ negative_total_amount_trip_count │
+            │ serving_loaded_at                │
+            │ pickup_month                     │
+            │ pickup_year                      │
+            └──────────────────────────────────┘
+```
 
-![Daily Demand Mart](docs/screenshots/8.png)
-
-- `Total trips`: Tổng số chuyến taxi trong khoảng thời gian được chọn
-
-- `Total revenue`: Tổng doanh thu taxi trong khoảng thời gian được chọn
-
-- `Average Revenue per Trip`: Doanh thu trung bình trên mỗi chuyến
-
-- `Average Trip Duration (Minutes)`: Thời lượng trung bình của một chuyến taxi
+- `Total trips`
+- `Total revenue`
+- `Average Revenue per Trip`
+- `Average Trip Duration (Minutes)`
 
 ![KPI](docs/screenshots/3.png)
 
