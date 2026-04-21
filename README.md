@@ -11,7 +11,7 @@ An end-to-end data engineering pipeline that transforms raw APIs from NYC TLC Ye
 - ✅ **Pipeline scope:** Built a complete **ETL pipeline** from raw APIs to star schema warehouse to analytical marts  
 - ✅ **Data modeling:** Designed a **star schema** with fact tables, dimensions, and bridge tables for many-to-many relationships  
 - ✅ **ETL development:** Implemented **extract, transform, load** processes with idempotent operations and data quality checks  
-- ✅ **Mart architecture:** Created **specialized data marts** (flat, skills, priority) with additive measures and incremental update patterns
+- ✅ **Mart architecture:** Created **specialized data marts** with additive measures and incremental update patterns
 
 ---
 
@@ -118,61 +118,48 @@ Denormalized table with all dimensions for ad-hoc queries.
 
 ---
 
-
 ## 💻 Data Engineering Skills Demonstrated
 
 ### ETL / ELT Pipeline Development
 
-- **Multi-Source Ingestion**: Integrated data from `NYC TLC Yellow Taxi Parquet`, `TLC Taxi Zone Lookup CSV`, and `Open-Meteo Historical Weather API`
-- **Raw Data Landing**: Built ingestion flow to collect, standardize, and land source data into `raw` storage before transformation
-- **Layered Transformations**: Implemented medallion-style pipeline with `raw -> bronze -> silver -> gold -> serving`
-- **Pipeline Modularity**: Separated ingestion, transformation, validation, and serving export into independent jobs for easier testing and debugging
-- **Reusability / Backfill Readiness**: Designed pipeline so historical periods can be reprocessed consistently
+- **Multi-Source Ingestion**: Ingested data from `NYC TLC Yellow Taxi Parquet`, `TLC Taxi Zone Lookup CSV`, and `Open-Meteo Historical Weather API`
+- **Layered Pipeline Design**: Built a medallion-style pipeline with `raw -> bronze -> silver -> gold -> serving`
+- **Modular Pipeline Structure**: Separated ingestion, transformation, validation, and serving export into reusable jobs
+- **Backfill Readiness**: Designed the pipeline so historical periods can be reprocessed consistently
 
 ### Spark Data Processing
 
-- **Distributed Transformation**: Used `Apache Spark / PySpark` for large-scale batch processing across multiple pipeline layers
-- **Schema Standardization**: Applied column selection, type casting, null handling, and field normalization during `raw -> bronze`
-- **Business Logic Transformation**: Built cleaning and enrichment logic during `bronze -> silver`
-- **Aggregation Engineering**: Created analytical aggregates during `silver -> gold` for dashboard-ready datasets
-- **Serving Preparation**: Published curated outputs into a `serving` layer optimized for BI consumption
+- **PySpark Transformations**: Used `Apache Spark / PySpark` for batch processing across all transformation layers
+- **Schema Standardization**: Applied column selection, type casting, null handling, and field normalization
+- **Business Logic & Aggregation**: Implemented cleaning, enrichment, and dashboard-ready aggregates
 
 ### Data Modeling
 
-- **Fact Table Design**: Built central fact table `fact_taxi_trips` at grain `1 row = 1 taxi trip`
-- **Dimension Modeling**: Designed supporting dimensions such as `dim_date`, `dim_zone`, and `dim_weather`
-- **Analytical Mart Design**: Built business-facing marts including `mart_daily_demand`, `mart_daily_payment_mix`, and `mart_weather_impact`
-- **Grain Management**: Integrated sources with different grains such as `trip`, `zone`, and `date`
-- **Business-Oriented Modeling**: Structured outputs around key analytical questions: demand trend, payment behavior, and weather impact
+- **Fact / Dimension Modeling**: Built `fact_taxi_trips`, `dim_date`, `dim_zone`, and `dim_weather`
+- **Analytical Mart Design**: Created `mart_daily_demand`, `mart_daily_payment_mix`, and `mart_weather_impact`
+- **Grain Management**: Modeled and integrated datasets at different grains such as `trip`, `zone`, and `date`
 
 ### Data Enrichment & Integration
 
-- **Geographic Enrichment**: Joined taxi trips with zone lookup data to add borough, zone, and service zone context
-- **Temporal Enrichment**: Joined trip data with daily weather data by service date
-- **Derived Metrics**: Computed fields such as trip duration, trip counts, revenue metrics, and daily weather flags
-- **Categorical Standardization**: Normalized payment types for consistent downstream aggregation
-- **Cross-Domain Analytics**: Combined mobility and weather datasets into a unified analytical model
+- **Geographic Enrichment**: Joined taxi trips with zone lookup for borough and zone context
+- **Weather Enrichment**: Joined trip data with daily weather by service date
+- **Derived Metrics**: Computed trip duration, demand, revenue, and weather-based flags
+- **Payment Standardization**: Normalized payment types for consistent downstream analysis
 
 ### Data Quality & Validation
 
-- **Validation by Layer**: Added checks for `raw`, `bronze`, `silver`, `gold`, and `serving`
-- **Data Quality Rules**: Validated row counts, required columns, null behavior, and join completeness
-- **Metric Validation**: Checked derived KPIs such as trip counts, revenue totals, and payment mix outputs
-- **SQL Checks**: Used SQL-based validation queries to confirm that transformed outputs matched business expectations
-- **Debugging Discipline**: Followed upstream-first debugging from raw data to marts instead of patching dashboard outputs
+- **Layer-Based Validation**: Added checks for `raw`, `bronze`, `silver`, `gold`, and `serving`
+- **Data Quality Checks**: Validated schema, row counts, null behavior, joins, and KPI outputs
+- **SQL Validation**: Used SQL checks to confirm transformed data matched business expectations
 
 ### Orchestration & Production Practices
 
-- **Workflow Orchestration**: Used `Apache Airflow` to schedule and coordinate ingestion, transform, validation, and export tasks
-- **Task Dependency Design**: Structured DAGs with clear job order, retry logic, and backfill capability
-- **Operational Separation**: Kept business logic inside scripts and Spark jobs, with Airflow focused on orchestration only
-- **Local Reproducibility**: Ran the project in a containerized development environment using `Docker / Docker Compose`
-- **Portfolio-Ready Engineering**: Organized the project into clear layers, reusable scripts, validation steps, and BI-ready outputs
+- **Airflow Orchestration**: Scheduled ingestion, transform, validation, and export workflows with `Apache Airflow`
+- **Dependency & Retry Design**: Structured DAGs with clear ordering, retry logic, and backfill support
+- **Containerized Development**: Used `Docker / Docker Compose` for reproducible local development
 
 ### Analytics Delivery
 
-- **Dashboard Data Preparation**: Prepared serving tables specifically for dashboard use cases
-- **KPI Enablement**: Supported analysis of daily demand, revenue trend, payment mix, rainy vs non-rainy demand, and snowy day behavior
-- **Single Source of Truth**: Converted raw operational data into curated analytical datasets for consistent reporting
-- **BI Consumption Layer**: Delivered stable outputs for tools like `Metabase`
-
+- **Serving Layer for BI**: Published curated tables for dashboard and reporting use cases
+- **KPI Enablement**: Supported demand trend, payment mix, and weather impact analysis
+- **BI Consumption**: Delivered stable outputs for tools like `Metabase`

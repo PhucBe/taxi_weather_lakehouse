@@ -20,7 +20,8 @@ logs/
 !.env.example
 
 credentials
-config
+config/airflow.cfg
+config/settings.yml
 
 data/
 

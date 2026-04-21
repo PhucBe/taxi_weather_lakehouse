@@ -1,0 +1,83 @@
+project:
+  name: taxi_weather_lakehouse
+  env: dev
+  timezone: America/New_York
+
+prototype:
+  year_months:
+    - "2023-01"
+    - "2023-02"
+    - "2023-03"
+
+paths:
+  local_data_dir: data/raw
+  taxi_dir: data/raw/taxi
+  weather_dir: data/raw/weather
+  zone_dir: data/raw/zone_lookup
+
+  bronze_dir: data/bronze
+  bronze_taxi_dir: data/bronze/taxi_trips_raw
+  bronze_weather_dir: data/bronze/weather_raw
+  bronze_zone_dir: data/bronze/zone_lookup
+
+  silver_dir: data/silver
+  silver_taxi_clean_dir: data/silver/taxi_trips_clean
+  silver_weather_dir: data/silver/weather_daily
+  silver_zone_dir: data/silver/zone_lookup
+
+  gold_dir: data/gold
+  gold_daily_zone_demand_dir: data/gold/daily_zone_demand
+  gold_daily_payment_mix_dir: data/gold/daily_payment_mix
+  gold_weather_impact_daily_dir: data/gold/weather_impact_daily
+
+  serving_dir: data/serving
+  serving_export_dir: data/serving/
+  serving_fact_taxi_trips_base_dir: data/serving/fact_taxi_trips_base
+  serving_zone_dim_base_dir: data/serving/zone_dim_base
+  serving_weather_daily_base_dir: data/serving/weather_daily_base
+
+  log_dir: logs
+
+source_urls:
+  taxi_url_template: "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{year_month}.parquet"
+  weather_base_url: "https://archive-api.open-meteo.com/v1/archive"
+  zone_lookup_url: "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+
+weather:
+  latitude: 40.7128
+  longitude: -74.0060
+  timezone: America/New_York
+  daily_variables:
+    - temperature_2m_max
+    - temperature_2m_min
+    - temperature_2m_mean
+    - precipitation_sum
+    - snowfall_sum
+
+aws:
+  region:
+  bucket_name:
+  s3_prefix_raw: raw/taxi_weather
+  s3_prefix_archive: archive/taxi_weather
+  s3_prefix_taxi: raw/taxi_weather/taxi
+  s3_prefix_weather: raw/taxi_weather/weather
+  s3_prefix_weather_json: raw/taxi_weather/weather/json
+  s3_prefix_weather_flat: raw/taxi_weather/weather/flat
+  s3_prefix_zone: raw/taxi_weather/zone
+
+redshift:
+  schema_raw: raw_layer
+  table_raw_taxi: raw_taxi_trips
+  table_raw_weather: raw_weather_daily
+  table_raw_zone: raw_zone_lookup
+
+ingestion:
+  taxi_file_format: parquet
+  weather_file_format: csv
+  zone_file_format: csv
+  csv_delimiter: ","
+  encoding: utf-8
+  truncate_before_load: true
+  fail_on_missing_file: true
+  save_weather_json: true
+  save_weather_flat_file: true
