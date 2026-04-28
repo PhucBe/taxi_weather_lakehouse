@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import re
 from pathlib import Path
@@ -26,27 +25,32 @@ from src.ingestion.load_raw_redshift import (
 YEAR_MONTH_IN_FILENAME = re.compile(r"(\d{4}-\d{2})")
 
 
+# Ưu tiên LOAD_DATE từ env, nếu không có thì dùng ngày hôm nay.
 def resolve_load_date() -> str:
-    """Ưu tiên LOAD_DATE từ env, nếu không có thì dùng ngày hôm nay."""
     return os.getenv("LOAD_DATE", today_str())
 
 
+# Đảm bảo file local tồn tại trước khi upload/load.
 def _require_existing_file(path: str | Path, label: str) -> Path:
-    """Đảm bảo file local tồn tại trước khi upload/load."""
     file_path = Path(path)
+
     if not file_path.exists():
         raise FileNotFoundError(f"{label} not found: {file_path}")
+    
     return file_path
 
 
+# Lấy YYYY-MM từ tên file, ví dụ yellow_tripdata_2023-01.parquet -> 2023-01.
 def _extract_year_month_from_filename(filename: str) -> str:
-    """Lấy YYYY-MM từ tên file, ví dụ yellow_tripdata_2023-01.parquet -> 2023-01."""
     match = YEAR_MONTH_IN_FILENAME.search(filename)
+
     if not match:
         raise ValueError(f"Cannot extract year_month from filename: {filename}")
+    
     return match.group(1)
 
 
+# Chuẩn hóa đầu ra của fetch_tlc_parquets()
 def _normalize_taxi_files(taxi_files: list[Any]) -> list[dict[str, str]]:
     """
     Chuẩn hóa đầu ra của fetch_tlc_parquets() về dạng:
@@ -58,7 +62,6 @@ def _normalize_taxi_files(taxi_files: list[Any]) -> list[dict[str, str]]:
         },
         ...
     ]
-
     Hỗ trợ 2 kiểu đầu vào:
     1) list[dict]
     2) list[str | Path]
@@ -96,7 +99,6 @@ def main() -> None:
     config = load_app_config()
     load_date = resolve_load_date()
     year_months = config["prototype"]["year_months"]
-
     reset_truncate_state()
 
     logger = get_logger(
@@ -124,33 +126,41 @@ def main() -> None:
 
     # 2) Fetch taxi parquet files from web -> local
     logger.info("Fetching NYC TLC taxi parquet files...")
+
     taxi_parquet_files = fetch_tlc_parquets(
         config=config,
         year_months=year_months,
         logger=logger,
     )
     taxi_parquet_files = _normalize_taxi_files(taxi_parquet_files)
+    
     logger.info("Fetched %s taxi parquet file(s).", len(taxi_parquet_files))
 
     # 3) Prepare taxi flat CSV files from local parquet
     logger.info("Preparing taxi flat CSV files...")
+
     taxi_csv_files = prepare_taxi_flat_files(
         config=config,
         taxi_files=taxi_parquet_files,
         logger=logger,
     )
+    
     logger.info("Prepared %s taxi flat CSV file(s).", len(taxi_csv_files))
 
     # 4) Fetch weather raw from API -> local json / in-memory payload
     logger.info("Fetching weather raw data from API...")
+
     weather_raw = fetch_weather_raw(
         config=config,
         year_months=year_months,
         logger=logger,
     )
 
+    logger.info("Fetched weather raw file(s)...")
+
     # 5) Flatten weather raw -> local CSV
     logger.info("Preparing flattened weather CSV...")
+
     weather_csv_path = _require_existing_file(
         prepare_weather_flat_file(
             config=config,
@@ -160,8 +170,11 @@ def main() -> None:
         "Flattened weather CSV",
     )
 
+    logger.info("Prepared weather flat CSV file(s)....")
+
     # 6) Fetch zone lookup CSV -> local
     logger.info("Fetching taxi zone lookup CSV...")
+
     zone_csv_path = _require_existing_file(
         fetch_zone_lookup(
             config=config,
@@ -170,11 +183,14 @@ def main() -> None:
         "Zone lookup CSV",
     )
 
+    logger.info("Prepared zone lookup CSV file(s)...")
+
     bucket_name = config["aws"]["bucket_name"]
     region = config["aws"]["region"]
 
     # 7) Upload taxi CSV files -> S3
     logger.info("Uploading taxi flat CSV files to S3...")
+
     taxi_s3_objects: list[dict[str, str]] = []
 
     for item in taxi_csv_files:
@@ -203,6 +219,7 @@ def main() -> None:
 
     # 8) Upload weather CSV -> S3
     logger.info("Uploading weather CSV to S3...")
+
     weather_s3_key = build_s3_key(
         prefix=config["aws"]["s3_prefix_weather"],
         filename=weather_csv_path.name,
@@ -218,6 +235,7 @@ def main() -> None:
 
     # 9) Upload zone CSV -> S3
     logger.info("Uploading zone lookup CSV to S3...")
+
     zone_s3_key = build_s3_key(
         prefix=config["aws"]["s3_prefix_zone"],
         filename=zone_csv_path.name,
@@ -233,6 +251,7 @@ def main() -> None:
 
     # 10) Load taxi CSV -> Redshift raw
     logger.info("Loading taxi CSV files from S3 into Redshift raw table...")
+
     for item in taxi_s3_objects:
         load_taxi_csv_to_redshift_raw(
             config=config,
@@ -245,6 +264,7 @@ def main() -> None:
 
     # 11) Load weather CSV -> Redshift raw
     logger.info("Loading weather CSV from S3 into Redshift raw table...")
+
     load_weather_csv_to_redshift_raw(
         config=config,
         local_csv_path=weather_csv_path,
@@ -256,6 +276,7 @@ def main() -> None:
 
     # 12) Load zone CSV -> Redshift raw
     logger.info("Loading zone CSV from S3 into Redshift raw table...")
+
     load_zone_csv_to_redshift_raw(
         config=config,
         local_csv_path=zone_csv_path,

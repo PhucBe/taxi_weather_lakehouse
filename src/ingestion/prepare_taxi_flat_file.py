@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
-
 import pandas as pd
 
 
@@ -29,6 +27,7 @@ OUTPUT_COLUMNS = [
     "airport_fee",
 ]
 
+
 # Mapping từ tên cột source TLC parquet -> tên cột output chuẩn hóa
 SOURCE_TO_OUTPUT_COLUMN_MAP = {
     "VendorID": "vendorid",
@@ -51,6 +50,7 @@ SOURCE_TO_OUTPUT_COLUMN_MAP = {
     "congestion_surcharge": "congestion_surcharge",
     "Airport_fee": "airport_fee",
 }
+
 
 # Cột bắt buộc tối thiểu để coi file taxi parquet là hợp lệ
 REQUIRED_SOURCE_COLUMNS = [
@@ -76,16 +76,14 @@ REQUIRED_SOURCE_COLUMNS = [
 
 def _require_existing_file(path: str | Path, label: str) -> Path:
     file_path = Path(path)
+
     if not file_path.exists():
         raise FileNotFoundError(f"{label} not found: {file_path}")
+    
     return file_path
 
 
 def _build_output_path(config: dict[str, Any], year_month: str) -> Path:
-    """
-    Ví dụ:
-    data/raw/taxi/flat/year=2023/month=01/yellow_tripdata_2023-01.csv
-    """
     year, month = year_month.split("-")
     taxi_dir = Path(config["paths"]["taxi_dir"])
 
@@ -100,6 +98,7 @@ def _build_output_path(config: dict[str, Any], year_month: str) -> Path:
 
 def _load_parquet_to_dataframe(parquet_path: str | Path) -> pd.DataFrame:
     parquet_path = Path(parquet_path)
+
     try:
         return pd.read_parquet(parquet_path)
     except Exception as exc:
@@ -108,6 +107,7 @@ def _load_parquet_to_dataframe(parquet_path: str | Path) -> pd.DataFrame:
 
 def _validate_required_source_columns(df: pd.DataFrame, parquet_path: str | Path) -> None:
     missing = [col for col in REQUIRED_SOURCE_COLUMNS if col not in df.columns]
+    
     if missing:
         raise ValueError(
             f"Taxi parquet missing required columns: {missing} | file={parquet_path}"
@@ -115,12 +115,6 @@ def _validate_required_source_columns(df: pd.DataFrame, parquet_path: str | Path
 
 
 def _normalize_taxi_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    - chỉ giữ bộ cột chuẩn
-    - rename về output schema cố định
-    - thêm cột optional bị thiếu dưới dạng null
-    - cast về kiểu dễ COPY CSV vào Redshift
-    """
     _validate_required_source_columns(df, "<in-memory-dataframe>")
 
     # Chỉ lấy những cột source có trong parquet
@@ -161,6 +155,7 @@ def _normalize_taxi_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         "congestion_surcharge",
         "airport_fee",
     ]
+
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -170,23 +165,13 @@ def _normalize_taxi_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Chuyển 1 taxi parquet local -> 1 taxi flat CSV local.
 def prepare_taxi_flat_file(
     config: dict[str, Any],
     taxi_file: dict[str, Any],
     logger,
     overwrite: bool = False,
 ) -> Path:
-    """
-    Chuyển 1 taxi parquet local -> 1 taxi flat CSV local.
-
-    taxi_file mong đợi:
-    {
-        "year_month": "2023-01",
-        "local_path": ".../yellow_tripdata_2023-01.parquet",
-        "filename": "yellow_tripdata_2023-01.parquet",
-        ...
-    }
-    """
     if not isinstance(taxi_file, dict):
         raise ValueError("taxi_file must be a dictionary")
 
@@ -195,6 +180,7 @@ def prepare_taxi_flat_file(
 
     if not year_month:
         raise ValueError("taxi_file must contain 'year_month'")
+    
     if not local_parquet_path:
         raise ValueError("taxi_file must contain 'local_path'")
 
@@ -204,6 +190,7 @@ def prepare_taxi_flat_file(
 
     if output_path.exists() and not overwrite:
         logger.info("Taxi flat CSV already exists, skip rebuild: %s", output_path)
+        
         return output_path
 
     logger.info(
@@ -216,7 +203,6 @@ def prepare_taxi_flat_file(
     df = _load_parquet_to_dataframe(parquet_path)
     _validate_required_source_columns(df, parquet_path)
     df = _normalize_taxi_dataframe(df)
-
     df.to_csv(output_path, index=False, encoding="utf-8")
 
     logger.info(
@@ -228,6 +214,7 @@ def prepare_taxi_flat_file(
     return output_path
 
 
+# Chuyển nhiều taxi parquet local -> nhiều taxi flat CSV local.
 def prepare_taxi_flat_files(
     config: dict[str, Any],
     taxi_files: list[dict[str, Any]],
@@ -235,8 +222,6 @@ def prepare_taxi_flat_files(
     overwrite: bool = False,
 ) -> list[dict[str, str]]:
     """
-    Chuyển nhiều taxi parquet local -> nhiều taxi flat CSV local.
-
     Trả về:
     [
         {

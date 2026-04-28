@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 import csv
@@ -17,23 +16,26 @@ OUTPUT_COLUMNS = [
 ]
 
 
+"""
+Lấy payload weather từ:
+1) weather_raw["payload"] nếu đã có sẵn trong memory
+2) weather_raw["local_path"] nếu cần đọc lại từ file JSON
+"""
 def _load_weather_payload(weather_raw: dict[str, Any]) -> dict[str, Any]:
-    """
-    Lấy payload weather từ:
-    1) weather_raw["payload"] nếu đã có sẵn trong memory
-    2) weather_raw["local_path"] nếu cần đọc lại từ file JSON
-    """
     payload = weather_raw.get("payload")
+
     if isinstance(payload, dict):
         return payload
 
     local_path = weather_raw.get("local_path")
+
     if not local_path:
         raise ValueError(
             "weather_raw must contain either 'payload' or 'local_path'"
         )
 
     json_path = Path(local_path)
+
     if not json_path.exists():
         raise FileNotFoundError(f"Weather raw JSON not found: {json_path}")
 
@@ -45,13 +47,10 @@ def _load_weather_payload(weather_raw: dict[str, Any]) -> dict[str, Any]:
 
     return payload
 
-
+# Validate phần daily trong payload Open-Meteo.
 def _validate_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """
-    Validate phần daily trong payload Open-Meteo.
-    Đồng thời đảm bảo các field cần cho CSV flat đều có đủ và cùng độ dài.
-    """
     daily = payload.get("daily")
+
     if not isinstance(daily, dict):
         raise ValueError("Weather payload does not contain valid 'daily' field")
 
@@ -59,7 +58,6 @@ def _validate_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Weather payload 'daily.time' is missing or empty")
 
     row_count = len(daily["time"])
-
     required_source_fields = [
         "time",
         "temperature_2m_max",
@@ -74,6 +72,7 @@ def _validate_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Weather payload missing daily field: {field}")
 
         values = daily[field]
+
         if not isinstance(values, list):
             raise ValueError(f"Weather payload field '{field}' must be a list")
 
@@ -85,18 +84,14 @@ def _validate_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return daily
 
 
+# Tạo đường dẫn output cho weather flat CSV.s
 def _build_output_path(
     config: dict[str, Any],
     start_date: str,
     end_date: str,
 ) -> Path:
-    """
-    Tạo đường dẫn output cho weather flat CSV.
-
-    Ví dụ:
-    data/raw/weather/flat/start_date=2023-01-01/end_date=2023-03-31/weather_daily_2023-01-01_2023-03-31.csv
-    """
     weather_dir = Path(config["paths"]["weather_dir"])
+
     return (
         weather_dir
         / "flat"
@@ -106,6 +101,7 @@ def _build_output_path(
     )
 
 
+# Chuyển weather raw JSON thành flat CSV để upload S3 và COPY vào Redshift raw.
 def prepare_weather_flat_file(
     config: dict[str, Any],
     weather_raw: dict[str, Any],
@@ -113,8 +109,6 @@ def prepare_weather_flat_file(
     overwrite: bool = False,
 ) -> Path:
     """
-    Chuyển weather raw JSON thành flat CSV để upload S3 và COPY vào Redshift raw.
-
     Đầu vào mong đợi:
     weather_raw = {
         "start_date": "2023-01-01",
@@ -123,7 +117,6 @@ def prepare_weather_flat_file(
         "payload": {...},   # optional nếu đã có trong memory
         ...
     }
-
     Đầu ra:
     Path tới file CSV flat.
     """
@@ -145,11 +138,11 @@ def prepare_weather_flat_file(
 
     if output_path.exists() and not overwrite:
         logger.info("Weather flat CSV already exists, skip rebuild: %s", output_path)
+        
         return output_path
 
     payload = _load_weather_payload(weather_raw)
     daily = _validate_daily_payload(payload)
-
     row_count = len(daily["time"])
 
     logger.info(
