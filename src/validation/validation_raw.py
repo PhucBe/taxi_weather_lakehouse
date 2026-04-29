@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 import csv
 from pathlib import Path
-
 import redshift_connector
 
 from src.common.config import load_app_config
@@ -49,30 +47,41 @@ EXPECTED_ZONE_COLUMNS_SANITIZED = [
 ]
 
 
+# Hàm kiểm tra file có tồn tại không.
 def _require_existing_file(path: str | Path, label: str) -> Path:
     file_path = Path(path)
+
     if not file_path.exists():
         raise FileNotFoundError(f"{label} not found: {file_path}")
+    
     if not file_path.is_file():
         raise ValueError(f"{label} is not a file: {file_path}")
+    
     return file_path
 
 
+# Hàm đọc dòng header của file CSV
 def _read_csv_header(csv_path: str | Path, encoding: str = "utf-8") -> list[str]:
     csv_path = Path(csv_path)
+
     with csv_path.open("r", encoding=encoding, newline="") as f:
         reader = csv.reader(f)
+
         return next(reader)
 
 
+# Hàm đếm số dòng dữ liệu trong CSV (Không tính header).
 def _count_csv_rows(csv_path: str | Path, encoding: str = "utf-8") -> int:
     csv_path = Path(csv_path)
+
     with csv_path.open("r", encoding=encoding, newline="") as f:
         reader = csv.reader(f)
         next(reader, None)  # skip header
+
         return sum(1 for _ in reader)
 
 
+# Hàm tạo danh sách đường dẫn taxi CSV cần validate
 def _build_taxi_csv_paths(config: dict, year_months: list[str]) -> list[Path]:
     taxi_dir = Path(config["paths"]["taxi_dir"])
     paths: list[Path] = []
@@ -86,15 +95,17 @@ def _build_taxi_csv_paths(config: dict, year_months: list[str]) -> list[Path]:
     return paths
 
 
+# Hàm tạo đường dẫn weather CSV cần Validate
 def _build_weather_csv_path(config: dict, year_months: list[str]) -> Path:
     start_date = f"{year_months[0]}-01"
-
     last_year, last_month = year_months[-1].split("-")
+
     from calendar import monthrange
+
     last_day = monthrange(int(last_year), int(last_month))[1]
     end_date = f"{last_year}-{last_month}-{last_day:02d}"
-
     weather_dir = Path(config["paths"]["weather_dir"])
+
     return (
         weather_dir
         / "flat"
@@ -104,11 +115,14 @@ def _build_weather_csv_path(config: dict, year_months: list[str]) -> Path:
     )
 
 
+# Hàm tạo đường dẫn zone lookup CSV.
 def _build_zone_csv_path(config: dict) -> Path:
     zone_dir = Path(config["paths"]["zone_dir"])
+
     return zone_dir / "taxi_zone_lookup.csv"
 
 
+# Hàm validate các file CSV raw ở local
 def validate_local_raw_files(config: dict, logger) -> None:
     logger.info("=" * 50)
     logger.info("=== START LOCAL RAW VALIDATION ===")
@@ -171,6 +185,7 @@ def validate_local_raw_files(config: dict, logger) -> None:
     logger.info("Validated zone CSV | path=%s | row_count=%s", zone_path, zone_row_count)
 
 
+# Hàm tạo kết nối tới Redshift.
 def _get_redshift_connection(config: dict):
     return redshift_connector.connect(
         host=config["redshift"]["host"],
@@ -181,11 +196,14 @@ def _get_redshift_connection(config: dict):
     )
 
 
+# Hàm chạy một câu SQL và lấy 1 dòng kết quả đầu tiên.
 def _fetch_one(cursor, sql: str):
     cursor.execute(sql)
+
     return cursor.fetchone()
 
 
+# Hàm validate các bảng raw trên Redshift.
 def validate_redshift_raw_tables(config: dict, logger) -> None:
     logger.info("=" * 50)
     logger.info("=== START REDSHIFT RAW VALIDATION ===")
@@ -206,8 +224,10 @@ def validate_redshift_raw_tables(config: dict, logger) -> None:
 
             if taxi_count <= 0:
                 raise ValueError("Redshift raw taxi table is empty")
+            
             if weather_count <= 0:
                 raise ValueError("Redshift raw weather table is empty")
+            
             if zone_count <= 0:
                 raise ValueError("Redshift raw zone table is empty")
 
@@ -222,6 +242,7 @@ def validate_redshift_raw_tables(config: dict, logger) -> None:
                 from {schema_name}.{taxi_table};
                 """
             )
+
             logger.info(
                 "Taxi pickup date range | min=%s | max=%s",
                 taxi_min_max[0],
@@ -237,6 +258,7 @@ def validate_redshift_raw_tables(config: dict, logger) -> None:
                 from {schema_name}.{weather_table};
                 """
             )
+
             logger.info(
                 "Weather date range | min=%s | max=%s",
                 weather_min_max[0],
@@ -255,6 +277,7 @@ def validate_redshift_raw_tables(config: dict, logger) -> None:
                 ) t;
                 """
             )[0]
+
             logger.info("Zone duplicate location_id groups | count=%s", zone_dupes)
 
     finally:
@@ -263,6 +286,7 @@ def validate_redshift_raw_tables(config: dict, logger) -> None:
 
 def main() -> None:
     config = load_app_config()
+
     logger = get_logger(
         name="taxi_weather_raw_validation",
         log_dir=config["paths"]["log_dir"],

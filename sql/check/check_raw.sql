@@ -1,35 +1,4 @@
--- =========================================================
--- CHECK_RAW.SQL
--- Project: Taxi Weather Lakehouse
--- Layer: raw_layer
--- Mục tiêu:
--- 1) Kiểm tra row count
--- 2) Kiểm tra date range
--- 3) Kiểm tra null / invalid values
--- 4) Kiểm tra consistency giữa taxi và zone
--- 5) Preview dữ liệu raw
--- =========================================================
-
-
--- =========================================================
--- 0) QUICK PREVIEW
--- =========================================================
-SELECT *
-FROM raw_layer.raw_taxi_trips
-LIMIT 20;
-
-SELECT *
-FROM raw_layer.raw_weather_daily
-LIMIT 20;
-
-SELECT *
-FROM raw_layer.raw_zone_lookup
-LIMIT 20;
-
-
--- =========================================================
--- 1) ROW COUNT TOÀN BỘ RAW TABLES
--- =========================================================
+-- 0) RAW TABLE ROW COUNTS
 SELECT 'raw_taxi_trips' AS table_name, COUNT(*) AS row_count
 FROM raw_layer.raw_taxi_trips
 
@@ -44,322 +13,191 @@ SELECT 'raw_zone_lookup' AS table_name, COUNT(*) AS row_count
 FROM raw_layer.raw_zone_lookup;
 
 
--- =========================================================
--- 2) DATE RANGE / BASIC COVERAGE
--- =========================================================
+-- 1) TAXI RAW QUALITY CHECK
+WITH params AS (
+    SELECT
+        DATE '2023-01-01' AS expected_start_date,
+        DATE '2023-03-31' AS expected_end_date
+)
 SELECT
+    COUNT(*) AS taxi_row_count,
+
     MIN(CAST(tpep_pickup_datetime AS DATE)) AS min_pickup_date,
     MAX(CAST(tpep_pickup_datetime AS DATE)) AS max_pickup_date,
-    MIN(CAST(tpep_dropoff_datetime AS DATE)) AS min_dropoff_date,
-    MAX(CAST(tpep_dropoff_datetime AS DATE)) AS max_dropoff_date
-FROM raw_layer.raw_taxi_trips;
 
-SELECT
-    MIN(date) AS min_weather_date,
-    MAX(date) AS max_weather_date,
-    COUNT(*) AS weather_row_count
-FROM raw_layer.raw_weather_daily;
-
-SELECT
-    COUNT(*) AS zone_row_count,
-    COUNT(DISTINCT location_id) AS distinct_location_id_count
-FROM raw_layer.raw_zone_lookup;
-
-
--- =========================================================
--- 3) TAXI RAW - NULL CHECKS Ở CỘT QUAN TRỌNG
--- =========================================================
-SELECT
-    SUM(CASE WHEN vendorid IS NULL THEN 1 ELSE 0 END) AS vendorid_nulls,
     SUM(CASE WHEN tpep_pickup_datetime IS NULL THEN 1 ELSE 0 END) AS pickup_datetime_nulls,
     SUM(CASE WHEN tpep_dropoff_datetime IS NULL THEN 1 ELSE 0 END) AS dropoff_datetime_nulls,
     SUM(CASE WHEN pulocationid IS NULL THEN 1 ELSE 0 END) AS pulocationid_nulls,
     SUM(CASE WHEN dolocationid IS NULL THEN 1 ELSE 0 END) AS dolocationid_nulls,
-    SUM(CASE WHEN payment_type IS NULL THEN 1 ELSE 0 END) AS payment_type_nulls,
-    SUM(CASE WHEN total_amount IS NULL THEN 1 ELSE 0 END) AS total_amount_nulls
-FROM raw_layer.raw_taxi_trips;
+    SUM(CASE WHEN total_amount IS NULL THEN 1 ELSE 0 END) AS total_amount_nulls,
 
-
--- =========================================================
--- 4) TAXI RAW - KIỂM TRA GIÁ TRỊ BẤT THƯỜNG
--- =========================================================
-SELECT
     SUM(CASE WHEN trip_distance < 0 THEN 1 ELSE 0 END) AS negative_trip_distance_rows,
-    SUM(CASE WHEN fare_amount < 0 THEN 1 ELSE 0 END) AS negative_fare_amount_rows,
-    SUM(CASE WHEN total_amount < 0 THEN 1 ELSE 0 END) AS negative_total_amount_rows,
     SUM(CASE WHEN passenger_count < 0 THEN 1 ELSE 0 END) AS negative_passenger_count_rows,
-    SUM(CASE WHEN tpep_dropoff_datetime < tpep_pickup_datetime THEN 1 ELSE 0 END) AS invalid_datetime_order_rows
-FROM raw_layer.raw_taxi_trips;
+    SUM(CASE WHEN total_amount < 0 THEN 1 ELSE 0 END) AS negative_total_amount_rows,
+
+    SUM(
+        CASE
+            WHEN tpep_dropoff_datetime < tpep_pickup_datetime THEN 1
+            ELSE 0
+        END
+    ) AS invalid_datetime_order_rows,
+
+    SUM(
+        CASE
+            WHEN CAST(tpep_pickup_datetime AS DATE) < p.expected_start_date
+              OR CAST(tpep_pickup_datetime AS DATE) > p.expected_end_date
+            THEN 1
+            ELSE 0
+        END
+    ) AS pickup_date_out_of_expected_range_rows
+
+FROM raw_layer.raw_taxi_trips t
+CROSS JOIN params p;
 
 
--- =========================================================
--- 5) TAXI RAW - PAYMENT TYPE DISTRIBUTION
--- =========================================================
+-- 2) WEATHER RAW QUALITY CHECK
 SELECT
-    payment_type,
-    COUNT(*) AS trip_count
-FROM raw_layer.raw_taxi_trips
-GROUP BY payment_type
-ORDER BY payment_type;
+    COUNT(*) AS weather_row_count,
+    COUNT(DISTINCT date) AS distinct_weather_dates,
 
+    MIN(date) AS min_weather_date,
+    MAX(date) AS max_weather_date,
 
--- =========================================================
--- 6) TAXI RAW - PICKUP / DROPOFF DATE DISTRIBUTION
--- =========================================================
-SELECT
-    CAST(tpep_pickup_datetime AS DATE) AS pickup_date,
-    COUNT(*) AS trip_count
-FROM raw_layer.raw_taxi_trips
-GROUP BY CAST(tpep_pickup_datetime AS DATE)
-ORDER BY pickup_date;
+    DATEDIFF(day, MIN(date), MAX(date)) + 1 AS expected_calendar_days,
+    (DATEDIFF(day, MIN(date), MAX(date)) + 1) - COUNT(DISTINCT date) AS missing_weather_days,
 
-SELECT
-    CAST(tpep_dropoff_datetime AS DATE) AS dropoff_date,
-    COUNT(*) AS trip_count
-FROM raw_layer.raw_taxi_trips
-GROUP BY CAST(tpep_dropoff_datetime AS DATE)
-ORDER BY dropoff_date;
+    COUNT(*) - COUNT(DISTINCT date) AS duplicate_weather_date_rows,
 
-
--- =========================================================
--- 7) WEATHER RAW - NULL CHECKS
--- =========================================================
-SELECT
     SUM(CASE WHEN date IS NULL THEN 1 ELSE 0 END) AS date_nulls,
-    SUM(CASE WHEN temperature_2m_max IS NULL THEN 1 ELSE 0 END) AS temperature_2m_max_nulls,
-    SUM(CASE WHEN temperature_2m_min IS NULL THEN 1 ELSE 0 END) AS temperature_2m_min_nulls,
-    SUM(CASE WHEN temperature_2m_mean IS NULL THEN 1 ELSE 0 END) AS temperature_2m_mean_nulls,
+    SUM(CASE WHEN temperature_2m_mean IS NULL THEN 1 ELSE 0 END) AS temperature_mean_nulls,
     SUM(CASE WHEN precipitation_sum IS NULL THEN 1 ELSE 0 END) AS precipitation_sum_nulls,
     SUM(CASE WHEN snowfall_sum IS NULL THEN 1 ELSE 0 END) AS snowfall_sum_nulls
+
 FROM raw_layer.raw_weather_daily;
 
 
--- =========================================================
--- 8) WEATHER RAW - DUPLICATE DATE CHECK
--- =========================================================
+-- 3) ZONE LOOKUP QUALITY CHECK
 SELECT
-    date,
-    COUNT(*) AS row_count
-FROM raw_layer.raw_weather_daily
-GROUP BY date
-HAVING COUNT(*) > 1
-ORDER BY date;
+    COUNT(*) AS zone_row_count,
+    COUNT(DISTINCT location_id) AS distinct_location_ids,
+    COUNT(*) - COUNT(DISTINCT location_id) AS duplicate_location_id_rows,
 
-
--- =========================================================
--- 9) WEATHER RAW - THIẾU NGÀY HAY KHÔNG
--- =========================================================
-WITH RECURSIVE date_spine(dt) AS (
-    SELECT MIN(date)::DATE AS dt
-    FROM raw_layer.raw_weather_daily
-
-    UNION ALL
-
-    SELECT DATEADD(DAY, 1, dt)::DATE
-    FROM date_spine
-    WHERE dt < (
-        SELECT MAX(date)::DATE
-        FROM raw_layer.raw_weather_daily
-    )
-)
-SELECT
-    ds.dt AS missing_date
-FROM date_spine ds
-LEFT JOIN raw_layer.raw_weather_daily w
-    ON w.date = ds.dt
-WHERE w.date IS NULL
-ORDER BY ds.dt;
-
-
--- =========================================================
--- 10) ZONE RAW - NULL CHECKS
--- =========================================================
-SELECT
     SUM(CASE WHEN location_id IS NULL THEN 1 ELSE 0 END) AS location_id_nulls,
     SUM(CASE WHEN borough IS NULL THEN 1 ELSE 0 END) AS borough_nulls,
     SUM(CASE WHEN zone IS NULL THEN 1 ELSE 0 END) AS zone_nulls,
     SUM(CASE WHEN service_zone IS NULL THEN 1 ELSE 0 END) AS service_zone_nulls
+
 FROM raw_layer.raw_zone_lookup;
 
 
--- =========================================================
--- 11) ZONE RAW - DUPLICATE LOCATION_ID CHECK
--- =========================================================
+-- 4) TAXI LOCATION MAPPING CHECK
 SELECT
-    location_id,
-    COUNT(*) AS row_count
-FROM raw_layer.raw_zone_lookup
-GROUP BY location_id
-HAVING COUNT(*) > 1
-ORDER BY location_id;
-
-
--- =========================================================
--- 12) TAXI VS ZONE - UNMAPPED PICKUP LOCATION
--- =========================================================
-SELECT
-    t.pulocationid,
-    COUNT(*) AS trip_count
+    'pickup_location_unmapped' AS check_name,
+    COUNT(*) AS unmapped_rows
 FROM raw_layer.raw_taxi_trips t
 LEFT JOIN raw_layer.raw_zone_lookup z
     ON t.pulocationid = z.location_id
 WHERE z.location_id IS NULL
-GROUP BY t.pulocationid
-ORDER BY trip_count DESC, t.pulocationid;
 
+UNION ALL
 
--- =========================================================
--- 13) TAXI VS ZONE - UNMAPPED DROPOFF LOCATION
--- =========================================================
 SELECT
-    t.dolocationid,
-    COUNT(*) AS trip_count
+    'dropoff_location_unmapped' AS check_name,
+    COUNT(*) AS unmapped_rows
 FROM raw_layer.raw_taxi_trips t
 LEFT JOIN raw_layer.raw_zone_lookup z
     ON t.dolocationid = z.location_id
-WHERE z.location_id IS NULL
-GROUP BY t.dolocationid
-ORDER BY trip_count DESC, t.dolocationid;
+WHERE z.location_id IS NULL;
 
 
--- =========================================================
--- 14) TOP PICKUP ZONES THEO SỐ CHUYẾN
--- =========================================================
-SELECT
-    z.borough,
-    z.zone,
-    COUNT(*) AS trip_count
-FROM raw_layer.raw_taxi_trips t
-LEFT JOIN raw_layer.raw_zone_lookup z
-    ON t.pulocationid = z.location_id
-GROUP BY z.borough, z.zone
-ORDER BY trip_count DESC
-LIMIT 20;
-
-
--- =========================================================
--- 15) TOP DROPOFF ZONES THEO SỐ CHUYẾN
--- =========================================================
-SELECT
-    z.borough,
-    z.zone,
-    COUNT(*) AS trip_count
-FROM raw_layer.raw_taxi_trips t
-LEFT JOIN raw_layer.raw_zone_lookup z
-    ON t.dolocationid = z.location_id
-GROUP BY z.borough, z.zone
-ORDER BY trip_count DESC
-LIMIT 20;
-
-
--- =========================================================
--- 16) TAXI RAW - CHECK APPROX REVENUE
--- =========================================================
-SELECT
-    COUNT(*) AS trip_count,
-    SUM(total_amount) AS total_revenue,
-    AVG(total_amount) AS avg_total_amount,
-    AVG(trip_distance) AS avg_trip_distance
-FROM raw_layer.raw_taxi_trips;
-
-
--- =========================================================
--- 17) WEATHER IMPACT QUICK CHECK Ở RAW LEVEL
--- =========================================================
-WITH TAXI_DAILY AS (
+-- 5) TAXI DAILY COVERAGE VS WEATHER
+WITH taxi_daily AS (
     SELECT
-        CAST(tpep_pickup_datetime AS DATE) AS trip_date,
+        CAST(tpep_pickup_datetime AS DATE) AS pickup_date,
         COUNT(*) AS trip_count,
         SUM(total_amount) AS total_revenue
     FROM raw_layer.raw_taxi_trips
     GROUP BY CAST(tpep_pickup_datetime AS DATE)
 )
 SELECT
-    t.trip_date,
-    t.trip_count,
-    t.total_revenue,
-    w.temperature_2m_mean,
-    w.precipitation_sum,
-    w.snowfall_sum
-FROM TAXI_DAILY t
+    COUNT(*) AS taxi_active_days,
+    SUM(CASE WHEN w.date IS NULL THEN 1 ELSE 0 END) AS taxi_days_missing_weather,
+    MIN(t.pickup_date) AS min_taxi_daily_date,
+    MAX(t.pickup_date) AS max_taxi_daily_date
+FROM taxi_daily t
 LEFT JOIN raw_layer.raw_weather_daily w
-    ON t.trip_date = w.date
-ORDER BY t.trip_date;
+    ON t.pickup_date = w.date;
 
 
--- =========================================================
--- 18) QUICK PASS/FAIL SUMMARY
--- =========================================================
+-- 6) PAYMENT TYPE DISTRIBUTION
 SELECT
-    CASE WHEN COUNT(*) > 0 THEN 'PASS' ELSE 'FAIL' END AS taxi_has_data
+    payment_type,
+    COUNT(*) AS trip_count,
+    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS trip_share_pct
+FROM raw_layer.raw_taxi_trips
+GROUP BY payment_type
+ORDER BY payment_type;
+
+
+-- 7) RAW BUSINESS METRICS QUICK CHECK
+SELECT
+    COUNT(*) AS trip_count,
+    SUM(total_amount) AS total_revenue_raw,
+    AVG(total_amount) AS avg_total_amount_raw,
+    AVG(trip_distance) AS avg_trip_distance_raw
 FROM raw_layer.raw_taxi_trips;
 
-SELECT
-    CASE WHEN COUNT(*) > 0 THEN 'PASS' ELSE 'FAIL' END AS weather_has_data
-FROM raw_layer.raw_weather_daily;
+
+-- 8) FINAL PASS / FAIL SUMMARY
+WITH
+taxi AS (
+    SELECT
+        COUNT(*) AS row_count,
+        SUM(CASE WHEN tpep_pickup_datetime IS NULL THEN 1 ELSE 0 END) AS pickup_nulls,
+        SUM(CASE WHEN pulocationid IS NULL THEN 1 ELSE 0 END) AS pickup_location_nulls,
+        SUM(CASE WHEN dolocationid IS NULL THEN 1 ELSE 0 END) AS dropoff_location_nulls
+    FROM raw_layer.raw_taxi_trips
+),
+
+weather AS (
+    SELECT
+        COUNT(*) AS row_count,
+        COUNT(DISTINCT date) AS distinct_dates,
+        (DATEDIFF(day, MIN(date), MAX(date)) + 1) - COUNT(DISTINCT date) AS missing_days
+    FROM raw_layer.raw_weather_daily
+),
+
+zone AS (
+    SELECT
+        COUNT(*) AS row_count,
+        COUNT(*) - COUNT(DISTINCT location_id) AS duplicate_location_ids
+    FROM raw_layer.raw_zone_lookup
+)
 
 SELECT
-    CASE WHEN COUNT(*) > 0 THEN 'PASS' ELSE 'FAIL' END AS zone_has_data
-FROM raw_layer.raw_zone_lookup;
+    CASE
+        WHEN taxi.row_count > 0
+         AND weather.row_count > 0
+         AND zone.row_count > 0
+         AND taxi.pickup_nulls = 0
+         AND taxi.pickup_location_nulls = 0
+         AND taxi.dropoff_location_nulls = 0
+         AND weather.missing_days = 0
+         AND zone.duplicate_location_ids = 0
+        THEN 'PASS'
+        ELSE 'CHECK_REQUIRED'
+    END AS raw_layer_status,
 
+    taxi.row_count AS taxi_rows,
+    weather.row_count AS weather_rows,
+    zone.row_count AS zone_rows,
 
--- =========================================================
--- 19) Xem những dòng taxi sớm nhất
--- =========================================================
-SELECT
-    tpep_pickup_datetime,
-    tpep_dropoff_datetime,
-    vendorid,
-    pulocationid,
-    dolocationid,
-    trip_distance,
-    fare_amount,
-    total_amount
-FROM raw_layer.raw_taxi_trips
-ORDER BY tpep_pickup_datetime
-LIMIT 50;
+    taxi.pickup_nulls,
+    taxi.pickup_location_nulls,
+    taxi.dropoff_location_nulls,
+    weather.missing_days,
+    zone.duplicate_location_ids
 
-
--- =========================================================
--- 20) Đếm các dòng nằm ngoài khoảng bạn kỳ vọng
--- =========================================================
-SELECT
-    COUNT(*) AS rows_before_2023_01_01
-FROM raw_layer.raw_taxi_trips
-WHERE CAST(tpep_pickup_datetime AS DATE) < DATE '2023-01-01';
-
-SELECT
-    COUNT(*) AS rows_after_2023_03_31
-FROM raw_layer.raw_taxi_trips
-WHERE CAST(tpep_pickup_datetime AS DATE) > DATE '2023-03-31';
-
-
--- =========================================================
--- 21) Nhìn phân bố theo năm để thấy outlier rõ hơn
--- =========================================================
-SELECT
-    EXTRACT(YEAR FROM tpep_pickup_datetime) AS pickup_year,
-    COUNT(*) AS row_count
-FROM raw_layer.raw_taxi_trips
-GROUP BY EXTRACT(YEAR FROM tpep_pickup_datetime)
-ORDER BY pickup_year;
-
-
--- =========================================================
--- 22) Xem riêng các record “lỗi khoảng ngày”
--- =========================================================
-SELECT
-    tpep_pickup_datetime,
-    tpep_dropoff_datetime,
-    passenger_count,
-    trip_distance,
-    fare_amount,
-    total_amount,
-    payment_type,
-    pulocationid,
-    dolocationid
-FROM raw_layer.raw_taxi_trips
-WHERE CAST(tpep_pickup_datetime AS DATE) < DATE '2023-01-01'
-   OR CAST(tpep_pickup_datetime AS DATE) > DATE '2023-03-31'
-ORDER BY tpep_pickup_datetime
-LIMIT 100;
+FROM taxi
+CROSS JOIN weather
+CROSS JOIN zone;
