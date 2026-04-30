@@ -1,16 +1,4 @@
--- =========================================================
--- BRONZE DATA QUALITY CHECKS
--- ENGINE: DUCKDB
--- PURPOSE:
---   - QUICK VALIDATION FOR BRONZE PARQUET LAYER
---   - MANUAL INSPECTION AFTER SPARK RAW -> BRONZE
--- =========================================================
-
-
--- =========================================================
 -- 0) SOURCE VIEWS
--- =========================================================
-
 CREATE OR REPLACE VIEW taxi_bronze AS
 SELECT *
 FROM read_parquet('data/bronze/taxi_trips_raw/pickup_year=*/pickup_month=*/*.parquet');
@@ -36,10 +24,7 @@ SELECT *
 FROM read_csv_auto('data/raw/zone_lookup/*.csv', HEADER = TRUE);
 
 
--- =========================================================
 -- 1) RAW VS BRONZE ROW COUNT
--- =========================================================
-
 SELECT
     'taxi' AS dataset,
     (SELECT COUNT(*) FROM taxi_raw) AS raw_count,
@@ -56,10 +41,7 @@ SELECT
     (SELECT COUNT(*) FROM zone_bronze) AS bronze_count;
 
 
--- =========================================================
 -- 2) PREVIEW / SCHEMA CHECK
--- =========================================================
-
 DESCRIBE SELECT * FROM taxi_bronze;
 DESCRIBE SELECT * FROM weather_bronze;
 DESCRIBE SELECT * FROM zone_bronze;
@@ -77,10 +59,7 @@ FROM zone_bronze
 LIMIT 5;
 
 
--- =========================================================
 -- 3) TAXI BRONZE CHECKS
--- =========================================================
-
 -- 3.1 ROW COUNT BY MONTH PARTITION
 SELECT
     pickup_year,
@@ -130,10 +109,7 @@ GROUP BY source_file
 ORDER BY row_count DESC, source_file;
 
 
--- =========================================================
 -- 4) WEATHER BRONZE CHECKS
--- =========================================================
-
 -- 4.1 ROW COUNT BY MONTH PARTITION
 SELECT
     weather_year,
@@ -185,10 +161,7 @@ WHERE w.date IS NULL
 ORDER BY c.expected_date;
 
 
--- =========================================================
 -- 5) ZONE BRONZE CHECKS
--- =========================================================
-
 -- 5.1 ROW COUNT AND DISTINCT LOCATION_ID
 SELECT
     COUNT(*) AS row_count,

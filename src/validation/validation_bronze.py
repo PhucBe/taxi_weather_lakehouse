@@ -1,48 +1,15 @@
 from __future__ import annotations
-
-# =========================================================
-# validation_bronze.py
-# ---------------------------------------------------------
-# Mục tiêu:
-# - Kiểm tra layer bronze sau khi job Spark raw_to_bronze chạy xong
-# - Kiểm tra path output có tồn tại không
-# - Kiểm tra có file parquet thật hay không
-# - Kiểm tra bộ cột có đúng như thiết kế không
-# - So sánh row count giữa raw và bronze
-# - Kiểm tra partition taxi/weather
-# - Kiểm tra null / duplicate tối thiểu
-#
-# Lưu ý:
-# - Đây là validation kỹ thuật của layer bronze
-# - Không phải validation business logic mạnh
-# =========================================================
-
 import glob
 from pathlib import Path
 from typing import Any
-
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-# =========================================================
-# IMPORT CONFIG + LOGGER
-# ---------------------------------------------------------
-# Project của bạn từng có 2 kiểu:
-# - src.common.config / src.common.logger
-# - src.utils.config / src.utils.logger
-# Nên để fallback cho linh hoạt.
-# =========================================================
-try:
-    from src.common.config import load_app_config
-    from src.common.logger import get_logger
-except ImportError:  # pragma: no cover
-    from src.utils.config import load_app_config  # type: ignore
-    from src.utils.logger import get_logger  # type: ignore
+from src.common.config import load_app_config
+from src.common.logger import get_logger
 
 
-# =========================================================
-# 1) CONSTANTS - BỘ CỘT CHUẨN CỦA BRONZE
-# =========================================================
+# CONSTANTS - BỘ CỘT CHUẨN CỦA BRONZE
 EXPECTED_TAXI_BRONZE_COLUMNS = [
     "vendorid",
     "tpep_pickup_datetime",
@@ -93,31 +60,22 @@ EXPECTED_ZONE_BRONZE_COLUMNS = [
 ]
 
 
-# =========================================================
-# 2) HELPER FUNCTIONS
-# =========================================================
+# Chuyển mọi giá trị path thành Path object.
 def _as_path(value: Any) -> Path:
-    """
-    Chuyển mọi giá trị path thành Path object.
-    """
     if isinstance(value, Path):
         return value
+    
     return Path(str(value))
 
 
+# Resolve toàn bộ path cần dùng cho validation.
 def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
-    """
-    Resolve toàn bộ path cần dùng cho validation.
-    """
     paths_cfg = config["paths"]
-
     taxi_dir = _as_path(paths_cfg["taxi_dir"])
     weather_dir = _as_path(paths_cfg["weather_dir"])
     zone_dir = _as_path(paths_cfg["zone_dir"])
-
     local_data_dir = _as_path(paths_cfg.get("local_data_dir", "data"))
     bronze_dir = _as_path(paths_cfg.get("bronze_dir", local_data_dir / "bronze"))
-
     bronze_taxi_dir = _as_path(paths_cfg.get("bronze_taxi_dir", bronze_dir / "taxi_trips_raw"))
     bronze_weather_dir = _as_path(paths_cfg.get("bronze_weather_dir", bronze_dir / "weather_raw"))
     bronze_zone_dir = _as_path(paths_cfg.get("bronze_zone_dir", bronze_dir / "zone_lookup"))
@@ -132,64 +90,49 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     }
 
 
+# Đảm bảo folder tồn tại và đúng là directory.
 def _require_existing_dir(path: Path, label: str) -> None:
-    """
-    Đảm bảo folder tồn tại và đúng là directory.
-    """
     if not path.exists():
         raise FileNotFoundError(f"{label} directory not found: {path}")
+    
     if not path.is_dir():
         raise ValueError(f"{label} exists but is not a directory: {path}")
 
 
+# Kiểm tra glob pattern có match ra file hay không.
 def _require_glob_matches(pattern: str, label: str) -> list[str]:
-    """
-    Kiểm tra glob pattern có match ra file hay không.
-    """
     matches = sorted(glob.glob(pattern, recursive=True))
+
     if not matches:
         raise FileNotFoundError(f"No {label} files found for pattern: {pattern}")
+    
     return matches
 
 
+# Liệt kê toàn bộ file *.parquet bên trong 1 folder.
 def _list_parquet_files(path: Path) -> list[Path]:
-    """
-    Liệt kê toàn bộ file *.parquet bên trong 1 folder.
-    """
     return sorted(path.rglob("*.parquet"))
 
 
+# Đảm bảo folder bronze có file parquet thật.
 def _assert_has_parquet_files(path: Path, label: str) -> list[Path]:
-    """
-    Đảm bảo folder bronze có file parquet thật.
-    """
     parquet_files = _list_parquet_files(path)
+
     if not parquet_files:
         raise FileNotFoundError(f"No parquet files found in {label}: {path}")
+    
     return parquet_files
 
 
+# Kiểm tra DataFrame có đủ đúng các cột mong đợi hay không.
 def _assert_columns_match_by_name(
     df: DataFrame,
     expected_columns: list[str],
     dataset_name: str,
 ) -> None:
-    """
-    Kiểm tra DataFrame có đủ đúng các cột mong đợi hay không.
-
-    Lưu ý quan trọng:
-    - KHÔNG kiểm tra thứ tự cột tuyệt đối
-    - Vì với parquet partitioned, Spark thường đưa cột partition ra cuối schema
-
-    Rule:
-    - không thiếu cột
-    - không thừa cột
-    """
     actual_columns = df.columns
-
     expected_set = set(expected_columns)
     actual_set = set(actual_columns)
-
     missing_columns = sorted(expected_set - actual_set)
     unexpected_columns = sorted(actual_set - expected_set)
 
@@ -203,25 +146,19 @@ def _assert_columns_match_by_name(
         )
 
 
+# Log schema ngắn gọn của DataFrame.
 def _log_schema(logger, dataset_name: str, df: DataFrame) -> None:
-    """
-    Log schema ngắn gọn của DataFrame.
-    """
     logger.info("[%s] columns=%s", dataset_name, ", ".join(df.columns))
     logger.info("[%s] schema=%s", dataset_name, df.schema.simpleString())
 
 
+# Đếm số dòng của DataFrame.
 def _count_rows(df: DataFrame) -> int:
-    """
-    Đếm số dòng của DataFrame.
-    """
     return df.count()
 
 
+# Tạo SparkSession cho job validation bronze.
 def build_spark(app_name: str = "validation_bronze") -> SparkSession:
-    """
-    Tạo SparkSession cho job validation bronze.
-    """
     spark = (
         SparkSession.builder
         .appName(app_name)
@@ -230,20 +167,14 @@ def build_spark(app_name: str = "validation_bronze") -> SparkSession:
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+
     return spark
 
 
-# =========================================================
-# 3) READ RAW / BRONZE
-# =========================================================
+# Đọc raw CSV chỉ để phục vụ count đối chiếu.
 def read_raw_csv_files(spark: SparkSession, input_glob: str, logger, label: str) -> DataFrame:
-    """
-    Đọc raw CSV chỉ để phục vụ count đối chiếu.
-
-    Dùng matched_files thay vì truyền **/*.csv trực tiếp cho Spark,
-    vì trước đó bạn đã gặp lỗi PATH_NOT_FOUND khi truyền glob string.
-    """
     matched_files = _require_glob_matches(input_glob, label)
+
     logger.info("[%s] matched raw files=%s", label, matched_files)
 
     return (
@@ -253,10 +184,8 @@ def read_raw_csv_files(spark: SparkSession, input_glob: str, logger, label: str)
     )
 
 
+# Đọc bronze parquet.
 def read_bronze_parquet(spark: SparkSession, bronze_path: Path, logger, label: str) -> DataFrame:
-    """
-    Đọc bronze parquet.
-    """
     _require_existing_dir(bronze_path, label)
     parquet_files = _assert_has_parquet_files(bronze_path, label)
 
@@ -266,18 +195,15 @@ def read_bronze_parquet(spark: SparkSession, bronze_path: Path, logger, label: s
     return spark.read.parquet(str(bronze_path))
 
 
-# =========================================================
-# 4) VALIDATION CHUNG
-# =========================================================
+# Dataset bronze không được rỗng.
 def validate_non_empty(df: DataFrame, dataset_name: str) -> None:
-    """
-    Dataset bronze không được rỗng.
-    """
     row_count = _count_rows(df)
+
     if row_count == 0:
         raise ValueError(f"[{dataset_name}] bronze dataset is empty")
 
 
+# So sánh row count raw và bronze.
 def validate_row_count_relation(
     raw_df: DataFrame,
     bronze_df: DataFrame,
@@ -285,15 +211,6 @@ def validate_row_count_relation(
     logger,
     allow_bronze_less_than_raw: bool = False,
 ) -> None:
-    """
-    So sánh row count raw và bronze.
-
-    Rule:
-    - bronze > raw => fail
-    - bronze < raw:
-        + nếu không được phép => fail
-        + nếu được phép => warning
-    """
     raw_count = _count_rows(raw_df)
     bronze_count = _count_rows(bronze_df)
 
@@ -320,22 +237,14 @@ def validate_row_count_relation(
             )
 
 
-# =========================================================
-# 5) TAXI BRONZE VALIDATION
-# =========================================================
+# Kiểm tra bộ cột taxi bronze đúng theo tên cột mong đợi. Không ép đúng thứ tự cột.
 def validate_taxi_bronze_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột taxi bronze đúng theo tên cột mong đợi.
-    Không ép đúng thứ tự cột.
-    """
     _assert_columns_match_by_name(df, EXPECTED_TAXI_BRONZE_COLUMNS, "taxi_bronze")
     _log_schema(logger, "taxi_bronze", df)
 
 
+# Kiểm tra các cột kỹ thuật quan trọng của taxi bronze không được null.
 def validate_taxi_bronze_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột kỹ thuật quan trọng của taxi bronze không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("pickup_date").isNull().cast("int")).alias("pickup_date_nulls"),
@@ -352,12 +261,10 @@ def validate_taxi_bronze_not_null(df: DataFrame) -> None:
             raise ValueError(f"[taxi_bronze] {field_name} must be 0 but got {value}")
 
 
+# Kiểm tra partition taxi bronze:
+# - có partition trong dữ liệu
+# - có partition directory trên disk
 def validate_taxi_bronze_partitions(df: DataFrame, bronze_path: Path, logger) -> None:
-    """
-    Kiểm tra partition taxi bronze:
-    - có partition trong dữ liệu
-    - có partition directory trên disk
-    """
     partition_rows = (
         df.select("pickup_year", "pickup_month")
         .distinct()
@@ -366,33 +273,28 @@ def validate_taxi_bronze_partitions(df: DataFrame, bronze_path: Path, logger) ->
     )
 
     partitions = [(row["pickup_year"], row["pickup_month"]) for row in partition_rows]
+    
     logger.info("[taxi_bronze] distinct partitions=%s", partitions)
 
     if not partitions:
         raise ValueError("[taxi_bronze] no partitions found in dataframe")
 
     partition_dirs = sorted(bronze_path.rglob("pickup_month=*"))
+
     if not partition_dirs:
         raise ValueError(f"[taxi_bronze] no partition directories found in {bronze_path}")
 
     logger.info("[taxi_bronze] partition directory count=%s", len(partition_dirs))
 
 
-# =========================================================
-# 6) WEATHER BRONZE VALIDATION
-# =========================================================
+# Kiểm tra bộ cột weather bronze đúng theo tên cột mong đợi.
 def validate_weather_bronze_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột weather bronze đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_WEATHER_BRONZE_COLUMNS, "weather_bronze")
     _log_schema(logger, "weather_bronze", df)
 
 
+# Kiểm tra các cột chính của weather bronze không được null.
 def validate_weather_bronze_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột chính của weather bronze không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("date").isNull().cast("int")).alias("date_nulls"),
@@ -409,10 +311,8 @@ def validate_weather_bronze_not_null(df: DataFrame) -> None:
             raise ValueError(f"[weather_bronze] {field_name} must be 0 but got {value}")
 
 
+# Weather daily không nên duplicate theo date.
 def validate_weather_bronze_date_uniqueness(df: DataFrame) -> None:
-    """
-    Weather daily không nên duplicate theo date.
-    """
     duplicate_count = (
         df.groupBy("date")
         .count()
@@ -424,10 +324,8 @@ def validate_weather_bronze_date_uniqueness(df: DataFrame) -> None:
         raise ValueError(f"[weather_bronze] duplicated dates found: {duplicate_count}")
 
 
+# Kiểm tra partition weather bronze.
 def validate_weather_bronze_partitions(df: DataFrame, bronze_path: Path, logger) -> None:
-    """
-    Kiểm tra partition weather bronze.
-    """
     partition_rows = (
         df.select("weather_year", "weather_month")
         .distinct()
@@ -436,33 +334,28 @@ def validate_weather_bronze_partitions(df: DataFrame, bronze_path: Path, logger)
     )
 
     partitions = [(row["weather_year"], row["weather_month"]) for row in partition_rows]
+    
     logger.info("[weather_bronze] distinct partitions=%s", partitions)
 
     if not partitions:
         raise ValueError("[weather_bronze] no partitions found in dataframe")
 
     partition_dirs = sorted(bronze_path.rglob("weather_month=*"))
+
     if not partition_dirs:
         raise ValueError(f"[weather_bronze] no partition directories found in {bronze_path}")
 
     logger.info("[weather_bronze] partition directory count=%s", len(partition_dirs))
 
 
-# =========================================================
-# 7) ZONE BRONZE VALIDATION
-# =========================================================
+# Kiểm tra bộ cột zone bronze đúng theo tên cột mong đợi.
 def validate_zone_bronze_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột zone bronze đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_ZONE_BRONZE_COLUMNS, "zone_bronze")
     _log_schema(logger, "zone_bronze", df)
 
 
+# location_id là khóa lookup chính nên không được null.
 def validate_zone_bronze_not_null(df: DataFrame) -> None:
-    """
-    location_id là khóa lookup chính nên không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("location_id").isNull().cast("int")).alias("location_id_nulls"),
@@ -477,10 +370,8 @@ def validate_zone_bronze_not_null(df: DataFrame) -> None:
             raise ValueError(f"[zone_bronze] {field_name} must be 0 but got {value}")
 
 
+# Kiểm tra duplicate của zone bronze theo natural key.
 def validate_zone_bronze_duplicates(df: DataFrame) -> None:
-    """
-    Kiểm tra duplicate của zone bronze theo natural key.
-    """
     duplicate_count = (
         df.groupBy("location_id", "borough", "zone", "service_zone")
         .count()
@@ -492,16 +383,8 @@ def validate_zone_bronze_duplicates(df: DataFrame) -> None:
         raise ValueError(f"[zone_bronze] duplicates found: {duplicate_count}")
 
 
-# =========================================================
-# 8) MAIN
-# =========================================================
+# Chạy toàn bộ validation bronze theo thứ tự.
 def main() -> None:
-    """
-    Chạy toàn bộ validation bronze theo thứ tự:
-    - taxi
-    - weather
-    - zone
-    """
     config = load_app_config()
     paths = _resolve_paths(config)
 
@@ -513,14 +396,13 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("START BRONZE VALIDATION")
     logger.info("=" * 60)
+
     logger.info("Resolved validation paths: %s", {k: str(v) for k, v in paths.items()})
 
     spark = build_spark(app_name="validation_bronze")
 
     try:
-        # -------------------------------------------------
-        # TAXI VALIDATION
-        # -------------------------------------------------
+        # Taxi
         logger.info("Validating taxi bronze...")
 
         taxi_raw_df = read_raw_csv_files(
@@ -555,9 +437,7 @@ def main() -> None:
 
         logger.info("Taxi bronze validation passed.")
 
-        # -------------------------------------------------
-        # WEATHER VALIDATION
-        # -------------------------------------------------
+        # Weather
         logger.info("Validating weather bronze...")
 
         weather_raw_df = read_raw_csv_files(
@@ -593,9 +473,7 @@ def main() -> None:
 
         logger.info("Weather bronze validation passed.")
 
-        # -------------------------------------------------
-        # ZONE VALIDATION
-        # -------------------------------------------------
+        # Zone
         logger.info("Validating zone bronze...")
 
         zone_raw_df = read_raw_csv_files(
@@ -634,8 +512,5 @@ def main() -> None:
         spark.stop()
 
 
-# =========================================================
-# 9) ENTRYPOINT
-# =========================================================
 if __name__ == "__main__":
     main()

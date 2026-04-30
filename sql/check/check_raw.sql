@@ -34,13 +34,7 @@ SELECT
     SUM(CASE WHEN trip_distance < 0 THEN 1 ELSE 0 END) AS negative_trip_distance_rows,
     SUM(CASE WHEN passenger_count < 0 THEN 1 ELSE 0 END) AS negative_passenger_count_rows,
     SUM(CASE WHEN total_amount < 0 THEN 1 ELSE 0 END) AS negative_total_amount_rows,
-
-    SUM(
-        CASE
-            WHEN tpep_dropoff_datetime < tpep_pickup_datetime THEN 1
-            ELSE 0
-        END
-    ) AS invalid_datetime_order_rows,
+    SUM(CASE WHEN tpep_dropoff_datetime < tpep_pickup_datetime THEN 1 ELSE 0 END) AS invalid_datetime_order_rows,
 
     SUM(
         CASE

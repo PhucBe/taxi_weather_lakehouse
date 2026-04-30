@@ -9,7 +9,6 @@ from src.common.config import load_app_config
 from src.common.logger import get_logger
 
 
-# 2) CONSTANTS - CỘT CHUẨN CHO BRONZE
 TAXI_RAW_COLUMNS = [
     "vendorid",
     "tpep_pickup_datetime",
@@ -49,7 +48,7 @@ ZONE_SOURCE_COLUMNS = [
 ]
 
 
-# 3) SCHEMA TƯỜNG MINH CHO INPUT CSV
+# SCHEMA TƯỜNG MINH CHO INPUT CSV
 TAXI_RAW_SCHEMA = T.StructType(
     [
         T.StructField("vendorid", T.StringType(), True),
@@ -95,57 +94,31 @@ ZONE_RAW_SCHEMA = T.StructType(
 )
 
 
-# 4) HELPER FUNCTIONS
+# Hàm ép mọi giá trị path trong config thành pathlib.Path.
 def _as_path(value: Any) -> Path:
-    """
-    Ép mọi giá trị path trong config thành pathlib.Path.
-
-    Ví dụ:
-    - "data/raw/taxi" -> Path("data/raw/taxi")
-    - Path(...) giữ nguyên
-    """
     if isinstance(value, Path):
         return value
+    
     return Path(str(value))
 
 
+# Tạo folder nếu chưa tồn tại.
 def _ensure_directory(path: Path) -> None:
-    """
-    Tạo folder nếu chưa tồn tại.
-    parents=True để tạo cả folder cha nếu cần.
-    exist_ok=True để không lỗi nếu folder đã có sẵn.
-    """
     path.mkdir(parents=True, exist_ok=True)
 
 
+# Kiểm tra xem pattern input có match ra file nào không.
 def _require_glob_matches(pattern: str, label: str) -> list[str]:
-    """
-    Kiểm tra xem pattern input có match ra file nào không.
-
-    Ví dụ:
-    - data/raw/taxi/flat/**/*.csv
-    - data/raw/weather/flat/**/*.csv
-
-    Nếu không có file nào, fail sớm để dễ debug.
-    """
     matches = sorted(glob.glob(pattern, recursive=True))
+
     if not matches:
         raise FileNotFoundError(f"No {label} files found for pattern: {pattern}")
+    
     return matches
 
 
+# Đảm bảo DataFrame có đủ tất cả cột expected_columns.
 def _ensure_columns(df: DataFrame, expected_columns: list[str]) -> DataFrame:
-    """
-    Đảm bảo DataFrame có đủ tất cả cột expected_columns.
-
-    Mục đích:
-    - tránh lỗi khi một số cột optional bị thiếu
-    - giữ output schema ổn định giữa các lần chạy
-
-    Cách làm:
-    - cột nào thiếu thì thêm vào dưới dạng NULL string tạm thời
-    - cuối cùng select lại đúng thứ tự expected_columns
-    """
     for column_name in expected_columns:
         if column_name not in df.columns:
             df = df.withColumn(column_name, F.lit(None).cast(T.StringType()))
@@ -153,29 +126,17 @@ def _ensure_columns(df: DataFrame, expected_columns: list[str]) -> DataFrame:
     return df.select(*expected_columns)
 
 
+# Đọc path từ config và trả về 1 dict các đường dẫn đã normalize.
 def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
-    """
-    Đọc path từ config và trả về 1 dict các đường dẫn đã normalize.
-
-    Ưu tiên:
-    - dùng trực tiếp bronze_taxi_dir / bronze_weather_dir / bronze_zone_dir
-    - nếu config chưa có, fallback từ bronze_dir
-    - nếu bronze_dir cũng chưa có, fallback từ local_data_dir/bronze
-    """
     paths_cfg = config["paths"]
 
-    # Raw input roots
     taxi_dir = _as_path(paths_cfg["taxi_dir"])
     weather_dir = _as_path(paths_cfg["weather_dir"])
     zone_dir = _as_path(paths_cfg["zone_dir"])
 
-    # Root data local, dùng để fallback khi chưa có bronze_dir.
     local_data_dir = _as_path(paths_cfg.get("local_data_dir", "data"))
-
-    # Bronze root
     bronze_dir = _as_path(paths_cfg.get("bronze_dir", local_data_dir / "bronze"))
 
-    # Bronze outputs cho từng dataset
     bronze_taxi_dir = _as_path(paths_cfg.get("bronze_taxi_dir", bronze_dir / "taxi_trips_raw"))
     bronze_weather_dir = _as_path(paths_cfg.get("bronze_weather_dir", bronze_dir / "weather_raw"))
     bronze_zone_dir = _as_path(paths_cfg.get("bronze_zone_dir", bronze_dir / "zone_lookup"))
@@ -191,14 +152,8 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     }
 
 
+# Tạo SparkSession cho job raw -> bronze.
 def build_spark(app_name: str = "raw_to_bronze") -> SparkSession:
-    """
-    Tạo SparkSession cho job raw -> bronze.
-
-    Các config ở đây đủ dùng cho local prototype:
-    - shuffle partitions vừa phải
-    - partition overwrite mode dynamic để overwrite partition linh hoạt hơn
-    """
     spark = (
         SparkSession.builder
         .appName(app_name)
@@ -208,39 +163,24 @@ def build_spark(app_name: str = "raw_to_bronze") -> SparkSession:
         .getOrCreate()
     )
 
-    # In log gọn level WARN để đỡ quá nhiều noise khi chạy local.
     spark.sparkContext.setLogLevel("WARN")
+
     return spark
 
 
+# Log thông tin cơ bản của DataFrame sau transform: số dòng, danh sách cột, schema dạng simpleString
 def log_dataframe_overview(logger, dataset_name: str, df: DataFrame) -> None:
-    """
-    Log thông tin cơ bản của DataFrame sau transform:
-    - số dòng
-    - danh sách cột
-    - schema dạng simpleString
-
-    count() tốn tài nguyên, nhưng prototype 3 tháng đầu thì chấp nhận được.
-    """
     row_count = df.count()
+
     logger.info("[%s] row_count=%s", dataset_name, row_count)
     logger.info("[%s] columns=%s", dataset_name, ", ".join(df.columns))
     logger.info("[%s] schema=%s", dataset_name, df.schema.simpleString())
 
 
-# 5) READ RAW CSV
+# Đọc taxi raw flat CSV bằng schema tường minh.
 def read_taxi_raw_csv(spark: SparkSession, input_glob: str, logger) -> DataFrame:
-    """
-    Đọc taxi raw flat CSV bằng schema tường minh.
-
-    header=True:
-    - file có dòng header
-
-    schema=TAXI_RAW_SCHEMA:
-    - không dùng inferSchema
-    - Spark đọc ổn định hơn giữa các tháng
-    """
     matched_files = _require_glob_matches(input_glob, "taxi raw CSV")
+
     logger.info("Found %s taxi raw CSV file(s).", len(matched_files))
     logger.info("Taxi input pattern: %s", input_glob)
     logger.info("Taxi matched files: %s", matched_files)
@@ -253,11 +193,10 @@ def read_taxi_raw_csv(spark: SparkSession, input_glob: str, logger) -> DataFrame
     )
 
 
+# Đọc weather raw flat CSV bằng schema tường minh.
 def read_weather_raw_csv(spark: SparkSession, input_glob: str, logger) -> DataFrame:
-    """
-    Đọc weather raw flat CSV bằng schema tường minh.
-    """
     matched_files = _require_glob_matches(input_glob, "weather raw CSV")
+
     logger.info("Found %s weather raw CSV file(s).", len(matched_files))
     logger.info("Weather input pattern: %s", input_glob)
     logger.info("Weather matched files: %s", matched_files)
@@ -270,11 +209,10 @@ def read_weather_raw_csv(spark: SparkSession, input_glob: str, logger) -> DataFr
     )
 
 
+# Đọc zone lookup CSV bằng schema tường minh.
 def read_zone_raw_csv(spark: SparkSession, input_glob: str, logger) -> DataFrame:
-    """
-    Đọc zone lookup CSV bằng schema tường minh.
-    """
     matched_files = _require_glob_matches(input_glob, "zone raw CSV")
+
     logger.info("Found %s zone raw CSV file(s).", len(matched_files))
     logger.info("Zone input pattern: %s", input_glob)
     logger.info("Zone matched files: %s", matched_files)
@@ -287,22 +225,8 @@ def read_zone_raw_csv(spark: SparkSession, input_glob: str, logger) -> DataFrame
     )
 
 
-# 6) TRANSFORM RAW -> BRONZE
+# Transform taxi raw CSV -> bronze taxi parquet.
 def transform_taxi_to_bronze(df: DataFrame) -> DataFrame:
-    """
-    Transform taxi raw CSV -> bronze taxi parquet.
-
-    Chỉ làm sạch nhẹ:
-    - đảm bảo đủ cột
-    - cast type
-    - thêm pickup_date, pickup_year, pickup_month
-    - thêm source_file, bronze_loaded_at
-
-    Chưa làm:
-    - business logic payment
-    - loại outlier
-    - join zone / weather
-    """
     # Đảm bảo đủ toàn bộ cột taxi chuẩn.
     df = _ensure_columns(df, TAXI_RAW_COLUMNS)
 
@@ -348,8 +272,6 @@ def transform_taxi_to_bronze(df: DataFrame) -> DataFrame:
     df = df.withColumn("bronze_loaded_at", F.current_timestamp())
 
     # Ở bronze mình lọc bỏ record không parse được pickup_date,
-    # vì taxi partition đang phụ thuộc vào pickup_year/pickup_month.
-    # Muốn giữ 100% raw-like hơn thì sau này có thể tách sang quarantine riêng.
     df = df.filter(F.col("pickup_date").isNotNull())
 
     # Chọn lại thứ tự cột cuối cùng cho đẹp và ổn định.
@@ -379,19 +301,12 @@ def transform_taxi_to_bronze(df: DataFrame) -> DataFrame:
         "source_file",
         "bronze_loaded_at",
     ]
+
     return df.select(*final_columns)
 
 
+# Transform weather raw CSV -> bronze weather parquet.
 def transform_weather_to_bronze(df: DataFrame) -> DataFrame:
-    """
-    Transform weather raw CSV -> bronze weather parquet.
-
-    Chỉ làm:
-    - cast date
-    - cast metric về double
-    - tạo weather_year, weather_month
-    - thêm source_file, bronze_loaded_at
-    """
     df = _ensure_columns(df, WEATHER_RAW_COLUMNS)
 
     df = (
@@ -424,25 +339,12 @@ def transform_weather_to_bronze(df: DataFrame) -> DataFrame:
         "source_file",
         "bronze_loaded_at",
     ]
+
     return df.select(*final_columns)
 
 
+# Transform zone raw CSV -> bronze zone parquet.
 def transform_zone_to_bronze(df: DataFrame) -> DataFrame:
-    """
-    Transform zone raw CSV -> bronze zone parquet.
-
-    Source zone thường có:
-    - LocationID
-    - Borough
-    - Zone
-    - service_zone
-
-    Bronze sẽ rename về:
-    - location_id
-    - borough
-    - zone
-    - service_zone
-    """
     # Rename từ source column sang column chuẩn bronze.
     rename_map = {
         "LocationID": "location_id",
@@ -484,27 +386,17 @@ def transform_zone_to_bronze(df: DataFrame) -> DataFrame:
         "source_file",
         "bronze_loaded_at",
     ]
+
     return df.select(*final_columns)
 
 
-# 7) WRITE BRONZE PARQUET
+# Ghi DataFrame ra parquet.
 def write_parquet(
     df: DataFrame,
     output_path: Path,
     mode: str = "overwrite",
     partition_cols: list[str] | None = None,
 ) -> None:
-    """
-    Ghi DataFrame ra parquet.
-
-    mode="overwrite":
-    - phù hợp prototype 3 tháng đầu
-
-    partition_cols:
-    - taxi = ["pickup_year", "pickup_month"]
-    - weather = ["weather_year", "weather_month"]
-    - zone = None
-    """
     _ensure_directory(output_path)
 
     writer = df.write.mode(mode)
@@ -515,18 +407,8 @@ def write_parquet(
     writer.parquet(str(output_path))
 
 
-# 8) MAIN ORCHESTRATION
+# Hàm main chạy toàn bộ flow raw -> bronze:
 def main() -> None:
-    """
-    Hàm main chạy toàn bộ flow raw -> bronze:
-    1) load config
-    2) resolve paths
-    3) build spark
-    4) read raw CSV
-    5) transform -> bronze
-    6) write parquet
-    7) log thông tin kết quả
-    """
     # Load config từ project.
     config = load_app_config()
 
@@ -539,9 +421,9 @@ def main() -> None:
         log_dir=config["paths"]["log_dir"],
     )
 
-    logger.info("=" * 60)
+    logger.info("=" * 50)
     logger.info("START SPARK RAW -> BRONZE")
-    logger.info("=" * 60)
+    logger.info("=" * 50)
 
     logger.info("Resolved paths: %s", {k: str(v) for k, v in paths.items()})
 
@@ -549,10 +431,9 @@ def main() -> None:
     spark = build_spark(app_name="spark_raw_to_bronze")
 
     try:
-        # ----------------------------------------------------------------------
         # TAXI
-        # ----------------------------------------------------------------------
         logger.info("Reading taxi raw CSV...")
+
         taxi_raw_df = read_taxi_raw_csv(
             spark=spark,
             input_glob=str(paths["taxi_input_glob"]),
@@ -560,22 +441,24 @@ def main() -> None:
         )
 
         logger.info("Transforming taxi raw -> bronze...")
+
         taxi_bronze_df = transform_taxi_to_bronze(taxi_raw_df)
         log_dataframe_overview(logger, "taxi_bronze", taxi_bronze_df)
 
         logger.info("Writing taxi bronze parquet...")
+
         write_parquet(
             df=taxi_bronze_df,
             output_path=paths["bronze_taxi_dir"],
             mode="overwrite",
             partition_cols=["pickup_year", "pickup_month"],
         )
+
         logger.info("Taxi bronze written to: %s", paths["bronze_taxi_dir"])
 
-        # ----------------------------------------------------------------------
         # WEATHER
-        # ----------------------------------------------------------------------
         logger.info("Reading weather raw CSV...")
+
         weather_raw_df = read_weather_raw_csv(
             spark=spark,
             input_glob=str(paths["weather_input_glob"]),
@@ -583,22 +466,24 @@ def main() -> None:
         )
 
         logger.info("Transforming weather raw -> bronze...")
+
         weather_bronze_df = transform_weather_to_bronze(weather_raw_df)
         log_dataframe_overview(logger, "weather_bronze", weather_bronze_df)
 
         logger.info("Writing weather bronze parquet...")
+
         write_parquet(
             df=weather_bronze_df,
             output_path=paths["bronze_weather_dir"],
             mode="overwrite",
             partition_cols=["weather_year", "weather_month"],
         )
+
         logger.info("Weather bronze written to: %s", paths["bronze_weather_dir"])
 
-        # ----------------------------------------------------------------------
         # ZONE
-        # ----------------------------------------------------------------------
         logger.info("Reading zone raw CSV...")
+
         zone_raw_df = read_zone_raw_csv(
             spark=spark,
             input_glob=str(paths["zone_input_glob"]),
@@ -606,16 +491,19 @@ def main() -> None:
         )
 
         logger.info("Transforming zone raw -> bronze...")
+
         zone_bronze_df = transform_zone_to_bronze(zone_raw_df)
         log_dataframe_overview(logger, "zone_bronze", zone_bronze_df)
 
         logger.info("Writing zone bronze parquet...")
+
         write_parquet(
             df=zone_bronze_df,
             output_path=paths["bronze_zone_dir"],
             mode="overwrite",
             partition_cols=None,
         )
+
         logger.info("Zone bronze written to: %s", paths["bronze_zone_dir"])
 
         logger.info("=" * 60)
@@ -623,10 +511,8 @@ def main() -> None:
         logger.info("=" * 60)
 
     finally:
-        # Dù job thành công hay lỗi thì vẫn stop Spark để giải phóng tài nguyên.
         spark.stop()
 
 
-# 9) ENTRYPOINT
 if __name__ == "__main__":
     main()
