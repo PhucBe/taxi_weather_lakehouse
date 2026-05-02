@@ -1,51 +1,14 @@
 from __future__ import annotations
-
-# =========================================================
-# validation_silver.py
-# ---------------------------------------------------------
-# Mục tiêu phiên bản mới:
-# - Kiểm tra layer silver sau khi job Spark bronze_to_silver chạy xong
-# - Silver hiện chỉ còn 3 bảng base:
-#     + silver_taxi_trips
-#     + silver_weather_daily
-#     + silver_zone_lookup
-# - KHÔNG còn bảng silver_taxi_trips_enriched
-#
-# Validation bao gồm:
-# - kiểm tra path output có tồn tại không
-# - kiểm tra có file parquet thật hay không
-# - kiểm tra bộ cột có đúng như thiết kế không
-# - so sánh row count giữa bronze và silver base
-# - kiểm tra partition taxi / weather
-# - kiểm tra null / duplicate / key uniqueness
-# - kiểm tra logic thời gian của taxi silver
-# =========================================================
-
 from pathlib import Path
 from typing import Any
-
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-# =========================================================
-# IMPORT CONFIG + LOGGER
-# ---------------------------------------------------------
-# Project của bạn từng có 2 kiểu:
-# - src.common.config / src.common.logger
-# - src.utils.config / src.utils.logger
-# Nên để fallback cho linh hoạt.
-# =========================================================
-try:
-    from src.common.config import load_app_config
-    from src.common.logger import get_logger
-except ImportError:  # pragma: no cover
-    from src.utils.config import load_app_config  # type: ignore
-    from src.utils.logger import get_logger  # type: ignore
+from src.common.config import load_app_config
+from src.common.logger import get_logger
 
 
-# =========================================================
 # 1) CONSTANTS - BỘ CỘT CHUẨN CỦA SILVER
-# =========================================================
 EXPECTED_SILVER_TAXI_COLUMNS = [
     "trip_id",
     "vendor_id",
@@ -104,26 +67,16 @@ EXPECTED_SILVER_ZONE_COLUMNS = [
 ]
 
 
-# =========================================================
-# 2) HELPER FUNCTIONS
-# =========================================================
+# Chuyển mọi giá trị path thành Path object.
 def _as_path(value: Any) -> Path:
-    """
-    Chuyển mọi giá trị path thành Path object.
-    """
     if isinstance(value, Path):
         return value
+    
     return Path(str(value))
 
 
+# Resolve toàn bộ path cần dùng cho validation silver.
 def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
-    """
-    Resolve toàn bộ path cần dùng cho validation silver.
-
-    Bao gồm:
-    - input bronze
-    - output silver base
-    """
     paths_cfg = config["paths"]
 
     local_data_dir = _as_path(paths_cfg.get("local_data_dir", "data"))
@@ -148,49 +101,36 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     }
 
 
+# Đảm bảo folder tồn tại và đúng là directory.
 def _require_existing_dir(path: Path, label: str) -> None:
-    """
-    Đảm bảo folder tồn tại và đúng là directory.
-    """
     if not path.exists():
         raise FileNotFoundError(f"{label} directory not found: {path}")
+    
     if not path.is_dir():
         raise ValueError(f"{label} exists but is not a directory: {path}")
 
 
+# Liệt kê toàn bộ file *.parquet bên trong 1 folder.
 def _list_parquet_files(path: Path) -> list[Path]:
-    """
-    Liệt kê toàn bộ file *.parquet bên trong 1 folder.
-    """
     return sorted(path.rglob("*.parquet"))
 
 
+# Đảm bảo folder có file parquet thật.
 def _assert_has_parquet_files(path: Path, label: str) -> list[Path]:
-    """
-    Đảm bảo folder có file parquet thật.
-    """
     parquet_files = _list_parquet_files(path)
+
     if not parquet_files:
         raise FileNotFoundError(f"No parquet files found in {label}: {path}")
+    
     return parquet_files
 
 
+# Kiểm tra DataFrame có đủ đúng các cột mong đợi hay không.
 def _assert_columns_match_by_name(
     df: DataFrame,
     expected_columns: list[str],
     dataset_name: str,
 ) -> None:
-    """
-    Kiểm tra DataFrame có đủ đúng các cột mong đợi hay không.
-
-    Lưu ý:
-    - KHÔNG kiểm tra thứ tự cột tuyệt đối
-    - Vì parquet partitioned thường khiến Spark đưa cột partition ra cuối schema
-
-    Rule:
-    - không thiếu cột
-    - không thừa cột
-    """
     actual_columns = df.columns
 
     expected_set = set(expected_columns)
@@ -209,25 +149,19 @@ def _assert_columns_match_by_name(
         )
 
 
+# Log schema ngắn gọn của DataFrame.
 def _log_schema(logger, dataset_name: str, df: DataFrame) -> None:
-    """
-    Log schema ngắn gọn của DataFrame.
-    """
     logger.info("[%s] columns=%s", dataset_name, ", ".join(df.columns))
     logger.info("[%s] schema=%s", dataset_name, df.schema.simpleString())
 
 
+# Đếm số dòng của DataFrame.
 def _count_rows(df: DataFrame) -> int:
-    """
-    Đếm số dòng của DataFrame.
-    """
     return df.count()
 
 
+# Tạo SparkSession cho job validation silver.
 def build_spark(app_name: str = "validation_silver") -> SparkSession:
-    """
-    Tạo SparkSession cho job validation silver.
-    """
     spark = (
         SparkSession.builder
         .appName(app_name)
@@ -236,21 +170,17 @@ def build_spark(app_name: str = "validation_silver") -> SparkSession:
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+
     return spark
 
 
-# =========================================================
-# 3) READ BRONZE / SILVER PARQUET
-# =========================================================
+# Đọc parquet dataset từ folder.
 def read_parquet_dataset(
     spark: SparkSession,
     dataset_path: Path,
     logger,
     label: str,
 ) -> DataFrame:
-    """
-    Đọc parquet dataset từ folder.
-    """
     _require_existing_dir(dataset_path, label)
     parquet_files = _assert_has_parquet_files(dataset_path, label)
 
@@ -260,18 +190,15 @@ def read_parquet_dataset(
     return spark.read.parquet(str(dataset_path))
 
 
-# =========================================================
-# 4) VALIDATION CHUNG
-# =========================================================
+# Dataset silver không được rỗng.
 def validate_non_empty(df: DataFrame, dataset_name: str) -> None:
-    """
-    Dataset silver không được rỗng.
-    """
     row_count = _count_rows(df)
+
     if row_count == 0:
         raise ValueError(f"[{dataset_name}] silver dataset is empty")
 
 
+# So sánh row count giữa nguồn và đích.
 def validate_row_count_relation(
     source_df: DataFrame,
     target_df: DataFrame,
@@ -280,18 +207,6 @@ def validate_row_count_relation(
     logger,
     allow_target_less_than_source: bool = True,
 ) -> None:
-    """
-    So sánh row count giữa nguồn và đích.
-
-    Dùng cho:
-    - bronze -> silver base
-
-    Rule:
-    - target > source => fail
-    - target < source:
-        + nếu không được phép => fail
-        + nếu được phép => warning
-    """
     source_count = _count_rows(source_df)
     target_count = _count_rows(target_df)
 
@@ -321,10 +236,8 @@ def validate_row_count_relation(
             )
 
 
+# Kiểm tra key phải unique.
 def validate_unique_key(df: DataFrame, key_columns: list[str], dataset_name: str) -> None:
-    """
-    Kiểm tra key phải unique.
-    """
     duplicate_count = (
         df.groupBy(*key_columns)
         .count()
@@ -338,21 +251,14 @@ def validate_unique_key(df: DataFrame, key_columns: list[str], dataset_name: str
         )
 
 
-# =========================================================
-# 5) TAXI SILVER VALIDATION
-# =========================================================
+# Kiểm tra bộ cột taxi silver đúng theo tên cột mong đợi.
 def validate_taxi_silver_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột taxi silver đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_SILVER_TAXI_COLUMNS, "silver_taxi_trips")
     _log_schema(logger, "silver_taxi_trips", df)
 
 
+# Kiểm tra các cột kỹ thuật và business quan trọng của taxi silver không được null.
 def validate_taxi_silver_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột kỹ thuật và business quan trọng của taxi silver không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("trip_id").isNull().cast("int")).alias("trip_id_nulls"),
@@ -377,22 +283,17 @@ def validate_taxi_silver_not_null(df: DataFrame) -> None:
             raise ValueError(f"[silver_taxi_trips] {field_name} must be 0 but got {value}")
 
 
+# trip_id là surrogate key ở grain 1 trip nên phải unique.
 def validate_taxi_silver_uniqueness(df: DataFrame) -> None:
-    """
-    trip_id là surrogate key ở grain 1 trip nên phải unique.
-    """
     validate_unique_key(df, ["trip_id"], "silver_taxi_trips")
 
 
+# Kiểm tra logic thời gian của taxi silver: pickup < dropoff, trip_duration_minutes > 0
 def validate_taxi_silver_time_logic(df: DataFrame) -> None:
-    """
-    Kiểm tra logic thời gian của taxi silver:
-    - pickup < dropoff
-    - trip_duration_minutes > 0
-    """
     invalid_pickup_dropoff_count = (
         df.filter(F.col("pickup_datetime") >= F.col("dropoff_datetime")).count()
     )
+
     if invalid_pickup_dropoff_count != 0:
         raise ValueError(
             f"[silver_taxi_trips] pickup_datetime >= dropoff_datetime found: "
@@ -402,22 +303,24 @@ def validate_taxi_silver_time_logic(df: DataFrame) -> None:
     invalid_duration_count = (
         df.filter(F.col("trip_duration_minutes") <= 0).count()
     )
+
     if invalid_duration_count != 0:
         raise ValueError(
             f"[silver_taxi_trips] trip_duration_minutes <= 0 found: {invalid_duration_count}"
         )
 
 
+"""
+Kiểm tra các cột dẫn xuất có khớp với pickup_date / pickup_datetime hay không:
+- pickup_year == year(pickup_date)
+- pickup_month == month(pickup_date)
+- pickup_hour == hour(pickup_datetime)
+"""
 def validate_taxi_silver_derived_columns(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột dẫn xuất có khớp với pickup_date / pickup_datetime hay không:
-    - pickup_year == year(pickup_date)
-    - pickup_month == month(pickup_date)
-    - pickup_hour == hour(pickup_datetime)
-    """
     invalid_year_count = (
         df.filter(F.col("pickup_year") != F.year(F.col("pickup_date"))).count()
     )
+
     if invalid_year_count != 0:
         raise ValueError(
             f"[silver_taxi_trips] pickup_year mismatch found: {invalid_year_count}"
@@ -426,6 +329,7 @@ def validate_taxi_silver_derived_columns(df: DataFrame) -> None:
     invalid_month_count = (
         df.filter(F.col("pickup_month") != F.month(F.col("pickup_date"))).count()
     )
+
     if invalid_month_count != 0:
         raise ValueError(
             f"[silver_taxi_trips] pickup_month mismatch found: {invalid_month_count}"
@@ -434,18 +338,15 @@ def validate_taxi_silver_derived_columns(df: DataFrame) -> None:
     invalid_hour_count = (
         df.filter(F.col("pickup_hour") != F.hour(F.col("pickup_datetime"))).count()
     )
+
     if invalid_hour_count != 0:
         raise ValueError(
             f"[silver_taxi_trips] pickup_hour mismatch found: {invalid_hour_count}"
         )
 
 
+# Kiểm tra partition taxi silver: có partition trong dữ liệu, có partition directory trên disk
 def validate_taxi_silver_partitions(df: DataFrame, silver_path: Path, logger) -> None:
-    """
-    Kiểm tra partition taxi silver:
-    - có partition trong dữ liệu
-    - có partition directory trên disk
-    """
     partition_rows = (
         df.select("pickup_year", "pickup_month")
         .distinct()
@@ -454,33 +355,28 @@ def validate_taxi_silver_partitions(df: DataFrame, silver_path: Path, logger) ->
     )
 
     partitions = [(row["pickup_year"], row["pickup_month"]) for row in partition_rows]
+
     logger.info("[silver_taxi_trips] distinct partitions=%s", partitions)
 
     if not partitions:
         raise ValueError("[silver_taxi_trips] no partitions found in dataframe")
 
     partition_dirs = sorted(silver_path.rglob("pickup_month=*"))
+
     if not partition_dirs:
         raise ValueError(f"[silver_taxi_trips] no partition directories found in {silver_path}")
 
     logger.info("[silver_taxi_trips] partition directory count=%s", len(partition_dirs))
 
 
-# =========================================================
-# 6) WEATHER SILVER VALIDATION
-# =========================================================
+# Kiểm tra bộ cột weather silver đúng theo tên cột mong đợi.
 def validate_weather_silver_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột weather silver đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_SILVER_WEATHER_COLUMNS, "silver_weather_daily")
     _log_schema(logger, "silver_weather_daily", df)
 
 
+# Kiểm tra các cột chính của weather silver không được null.
 def validate_weather_silver_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột chính của weather silver không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("weather_date").isNull().cast("int")).alias("weather_date_nulls"),
@@ -498,17 +394,13 @@ def validate_weather_silver_not_null(df: DataFrame) -> None:
             raise ValueError(f"[silver_weather_daily] {field_name} must be 0 but got {value}")
 
 
+# Weather daily phải unique theo ngày.
 def validate_weather_silver_uniqueness(df: DataFrame) -> None:
-    """
-    Weather daily phải unique theo ngày.
-    """
     validate_unique_key(df, ["weather_date"], "silver_weather_daily")
 
 
+# Kiểm tra partition weather silver.
 def validate_weather_silver_partitions(df: DataFrame, silver_path: Path, logger) -> None:
-    """
-    Kiểm tra partition weather silver.
-    """
     partition_rows = (
         df.select("weather_year", "weather_month")
         .distinct()
@@ -517,33 +409,28 @@ def validate_weather_silver_partitions(df: DataFrame, silver_path: Path, logger)
     )
 
     partitions = [(row["weather_year"], row["weather_month"]) for row in partition_rows]
+    
     logger.info("[silver_weather_daily] distinct partitions=%s", partitions)
 
     if not partitions:
         raise ValueError("[silver_weather_daily] no partitions found in dataframe")
 
     partition_dirs = sorted(silver_path.rglob("weather_month=*"))
+
     if not partition_dirs:
         raise ValueError(f"[silver_weather_daily] no partition directories found in {silver_path}")
 
     logger.info("[silver_weather_daily] partition directory count=%s", len(partition_dirs))
 
 
-# =========================================================
-# 7) ZONE SILVER VALIDATION
-# =========================================================
+# Kiểm tra bộ cột zone silver đúng theo tên cột mong đợi.
 def validate_zone_silver_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột zone silver đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_SILVER_ZONE_COLUMNS, "silver_zone_lookup")
     _log_schema(logger, "silver_zone_lookup", df)
 
 
+# location_id là khóa lookup chính nên không được null.
 def validate_zone_silver_not_null(df: DataFrame) -> None:
-    """
-    location_id là khóa lookup chính nên không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("location_id").isNull().cast("int")).alias("location_id_nulls"),
@@ -559,23 +446,13 @@ def validate_zone_silver_not_null(df: DataFrame) -> None:
             raise ValueError(f"[silver_zone_lookup] {field_name} must be 0 but got {value}")
 
 
+# Zone lookup phải unique theo location_id.
 def validate_zone_silver_uniqueness(df: DataFrame) -> None:
-    """
-    Zone lookup phải unique theo location_id.
-    """
     validate_unique_key(df, ["location_id"], "silver_zone_lookup")
 
 
-# =========================================================
-# 8) MAIN
-# =========================================================
+# Chạy toàn bộ validation silver theo thứ tự: taxi silver -> weather silver -> zone silver
 def main() -> None:
-    """
-    Chạy toàn bộ validation silver theo thứ tự:
-    - taxi silver
-    - weather silver
-    - zone silver
-    """
     config = load_app_config()
     paths = _resolve_paths(config)
 
@@ -592,9 +469,6 @@ def main() -> None:
     spark = build_spark(app_name="validation_silver")
 
     try:
-        # -------------------------------------------------
-        # READ BRONZE SOURCES
-        # -------------------------------------------------
         logger.info("Reading bronze sources for comparison...")
 
         taxi_bronze_df = read_parquet_dataset(
@@ -618,9 +492,6 @@ def main() -> None:
             label="zone_bronze",
         )
 
-        # -------------------------------------------------
-        # READ SILVER OUTPUTS
-        # -------------------------------------------------
         logger.info("Reading silver outputs...")
 
         silver_taxi_df = read_parquet_dataset(
@@ -644,9 +515,6 @@ def main() -> None:
             label="silver_zone_lookup",
         )
 
-        # -------------------------------------------------
-        # TAXI SILVER VALIDATION
-        # -------------------------------------------------
         logger.info("Validating silver_taxi_trips...")
 
         validate_non_empty(silver_taxi_df, "silver_taxi_trips")
@@ -671,9 +539,6 @@ def main() -> None:
 
         logger.info("silver_taxi_trips validation passed.")
 
-        # -------------------------------------------------
-        # WEATHER SILVER VALIDATION
-        # -------------------------------------------------
         logger.info("Validating silver_weather_daily...")
 
         validate_non_empty(silver_weather_df, "silver_weather_daily")
@@ -696,9 +561,6 @@ def main() -> None:
 
         logger.info("silver_weather_daily validation passed.")
 
-        # -------------------------------------------------
-        # ZONE SILVER VALIDATION
-        # -------------------------------------------------
         logger.info("Validating silver_zone_lookup...")
 
         validate_non_empty(silver_zone_df, "silver_zone_lookup")
@@ -724,8 +586,5 @@ def main() -> None:
         spark.stop()
 
 
-# =========================================================
-# 9) ENTRYPOINT
-# =========================================================
 if __name__ == "__main__":
     main()

@@ -1,56 +1,15 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
-
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-# =========================================================
-# IMPORT CONFIG + LOGGER
-# ---------------------------------------------------------
-# Project của bạn từng có 2 kiểu:
-# - src.common.config / src.common.logger
-# - src.utils.config / src.utils.logger
-# Nên để fallback cho linh hoạt.
-# =========================================================
-try:
-    from src.common.config import load_app_config
-    from src.common.logger import get_logger
-except ImportError:  # pragma: no cover
-    from src.utils.config import load_app_config  # type: ignore
-    from src.utils.logger import get_logger  # type: ignore
+from src.common.config import load_app_config
+from src.common.logger import get_logger
 
 
-# =========================================================
-# bronze_to_silver.py
-# ---------------------------------------------------------
-# Mục tiêu phiên bản mới:
-# - Đọc 3 bảng bronze parquet:
-#     + taxi bronze
-#     + weather bronze
-#     + zone bronze
-# - Transform thành 3 bảng silver base:
-#     + silver_taxi_trips
-#     + silver_weather_daily
-#     + silver_zone_lookup
-# - KHÔNG build silver_taxi_trips_enriched nữa
-#
-# Lý do:
-# - Silver chỉ giữ vai trò cleaned base layer
-# - Join taxi + zone + weather sẽ được dời sang Gold
-#   để build:
-#     + dim_date
-#     + dim_zone
-#     + dim_weather
-#     + fact_taxi_trips
-# =========================================================
-
-
-# =========================================================
 # 1) CONSTANTS - BỘ CỘT CHUẨN CHO SILVER
-# =========================================================
 SILVER_TAXI_COLUMNS = [
     "trip_id",
     "vendor_id",
@@ -109,33 +68,21 @@ SILVER_ZONE_COLUMNS = [
 ]
 
 
-# =========================================================
-# 2) HELPER FUNCTIONS
-# =========================================================
+# Ép mọi giá trị path trong config thành pathlib.Path.
 def _as_path(value: Any) -> Path:
-    """
-    Ép mọi giá trị path trong config thành pathlib.Path.
-    """
     if isinstance(value, Path):
         return value
+    
     return Path(str(value))
 
 
+# Tạo folder nếu chưa tồn tại.
 def _ensure_directory(path: Path) -> None:
-    """
-    Tạo folder nếu chưa tồn tại.
-    """
     path.mkdir(parents=True, exist_ok=True)
 
 
+# Đọc path từ config và trả về dict các đường dẫn đã normalize.
 def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
-    """
-    Đọc path từ config và trả về dict các đường dẫn đã normalize.
-
-    Bản mới chỉ resolve:
-    - bronze taxi / weather / zone
-    - silver taxi / weather / zone
-    """
     paths_cfg = config["paths"]
 
     local_data_dir = _as_path(paths_cfg.get("local_data_dir", "data"))
@@ -162,10 +109,8 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     }
 
 
+# Tạo SparkSession cho job bronze -> silver.
 def build_spark(app_name: str = "bronze_to_silver") -> SparkSession:
-    """
-    Tạo SparkSession cho job bronze -> silver.
-    """
     spark = (
         SparkSession.builder
         .appName(app_name)
@@ -175,31 +120,26 @@ def build_spark(app_name: str = "bronze_to_silver") -> SparkSession:
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
+
     return spark
 
 
+# Log thông tin cơ bản của DataFrame sau transform.
 def log_dataframe_overview(logger, dataset_name: str, df: DataFrame) -> None:
-    """
-    Log thông tin cơ bản của DataFrame sau transform.
-    """
     row_count = df.count()
+
     logger.info("[%s] row_count=%s", dataset_name, row_count)
     logger.info("[%s] columns=%s", dataset_name, ", ".join(df.columns))
     logger.info("[%s] schema=%s", dataset_name, df.schema.simpleString())
 
 
-# =========================================================
-# 3) READ BRONZE PARQUET
-# =========================================================
+# Đọc 1 dataset bronze parquet.
 def read_bronze_parquet(
     spark: SparkSession,
     input_path: Path,
     label: str,
     logger,
 ) -> DataFrame:
-    """
-    Đọc 1 dataset bronze parquet.
-    """
     if not input_path.exists():
         raise FileNotFoundError(f"[{label}] input path not found: {input_path}")
 
@@ -207,17 +147,16 @@ def read_bronze_parquet(
         raise ValueError(f"[{label}] input path exists but is not a directory: {input_path}")
 
     logger.info("[%s] reading bronze parquet from: %s", label, input_path)
+    
     return spark.read.parquet(str(input_path))
 
 
+# Đọc toàn bộ input bronze và trả về dict DataFrame.
 def read_all_bronze_inputs(
     spark: SparkSession,
     paths: dict[str, Path],
     logger,
 ) -> dict[str, DataFrame]:
-    """
-    Đọc toàn bộ input bronze và trả về dict DataFrame.
-    """
     taxi_bronze_df = read_bronze_parquet(
         spark=spark,
         input_path=paths["bronze_taxi_dir"],
@@ -246,13 +185,8 @@ def read_all_bronze_inputs(
     }
 
 
-# =========================================================
-# 4) TAXI SILVER - HELPER LOGIC
-# =========================================================
+# Tạo các cột phát sinh cho taxi silver.
 def add_taxi_derived_columns(df: DataFrame) -> DataFrame:
-    """
-    Tạo các cột phát sinh cho taxi silver.
-    """
     return (
         df
         .withColumn("pickup_hour", F.hour(F.col("pickup_datetime")))
@@ -268,10 +202,8 @@ def add_taxi_derived_columns(df: DataFrame) -> DataFrame:
     )
 
 
+# Áp business rules tối thiểu để taxi từ bronze đi vào silver.
 def apply_taxi_quality_filters(df: DataFrame) -> DataFrame:
-    """
-    Áp business rules tối thiểu để taxi từ bronze đi vào silver.
-    """
     return (
         df
         .filter(F.col("pickup_datetime").isNotNull())
@@ -284,21 +216,16 @@ def apply_taxi_quality_filters(df: DataFrame) -> DataFrame:
     )
 
 
+# Giới hạn taxi theo phạm vi project hiện tại: weather cover 2023-01-01 đến 2023-03-31.
 def apply_project_date_scope(df: DataFrame) -> DataFrame:
-    """
-    Giới hạn taxi theo phạm vi project hiện tại:
-    weather cover 2023-01-01 đến 2023-03-31.
-    """
     return df.filter(
         (F.col("pickup_date") >= F.to_date(F.lit("2023-01-01"))) &
         (F.col("pickup_date") <= F.to_date(F.lit("2023-03-31")))
     )
 
 
+# Sinh surrogate key trip_id cho taxi silver.
 def build_trip_id(df: DataFrame) -> DataFrame:
-    """
-    Sinh surrogate key trip_id cho taxi silver.
-    """
     trip_id_expr = F.concat_ws(
         "||",
         F.coalesce(F.col("vendor_id").cast("string"), F.lit("")),
@@ -309,16 +236,12 @@ def build_trip_id(df: DataFrame) -> DataFrame:
         F.coalesce(F.col("trip_distance").cast("string"), F.lit("")),
         F.coalesce(F.col("total_amount").cast("string"), F.lit("")),
     )
+
     return df.withColumn("trip_id", F.sha2(trip_id_expr, 256))
 
 
-# =========================================================
-# 5) TRANSFORM BRONZE -> SILVER BASE
-# =========================================================
+# Transform taxi bronze -> silver_taxi_trips.
 def transform_taxi_to_silver(df: DataFrame) -> DataFrame:
-    """
-    Transform taxi bronze -> silver_taxi_trips.
-    """
     df = (
         df
         .withColumnRenamed("vendorid", "vendor_id")
@@ -372,10 +295,8 @@ def transform_taxi_to_silver(df: DataFrame) -> DataFrame:
     return df.select(*SILVER_TAXI_COLUMNS)
 
 
+# Transform weather bronze -> silver_weather_daily.
 def transform_weather_to_silver(df: DataFrame) -> DataFrame:
-    """
-    Transform weather bronze -> silver_weather_daily.
-    """
     df = (
         df
         .withColumnRenamed("date", "weather_date")
@@ -397,10 +318,8 @@ def transform_weather_to_silver(df: DataFrame) -> DataFrame:
     return df.select(*SILVER_WEATHER_COLUMNS)
 
 
+# Transform zone bronze -> silver_zone_lookup.
 def transform_zone_to_silver(df: DataFrame) -> DataFrame:
-    """
-    Transform zone bronze -> silver_zone_lookup.
-    """
     df = (
         df
         .withColumn("borough", F.trim(F.col("borough")))
@@ -415,18 +334,13 @@ def transform_zone_to_silver(df: DataFrame) -> DataFrame:
     return df.select(*SILVER_ZONE_COLUMNS)
 
 
-# =========================================================
-# 6) WRITE SILVER PARQUET
-# =========================================================
+# Ghi DataFrame ra parquet.
 def write_parquet(
     df: DataFrame,
     output_path: Path,
     mode: str = "overwrite",
     partition_cols: list[str] | None = None,
 ) -> None:
-    """
-    Ghi DataFrame ra parquet.
-    """
     _ensure_directory(output_path)
 
     writer = df.write.mode(mode)
@@ -437,56 +351,46 @@ def write_parquet(
     writer.parquet(str(output_path))
 
 
+# Ghi toàn bộ output silver base ra parquet.
 def write_all_silver_outputs(
     outputs: dict[str, DataFrame],
     paths: dict[str, Path],
     logger,
 ) -> None:
-    """
-    Ghi toàn bộ output silver base ra parquet.
-    """
     logger.info("Writing silver_taxi_trips parquet...")
+
     write_parquet(
         df=outputs["silver_taxi_df"],
         output_path=paths["silver_taxi_dir"],
         mode="overwrite",
         partition_cols=["pickup_year", "pickup_month"],
     )
-    logger.info("silver_taxi_trips written to: %s", paths["silver_taxi_dir"])
 
+    logger.info("silver_taxi_trips written to: %s", paths["silver_taxi_dir"])
     logger.info("Writing silver_weather_daily parquet...")
+
     write_parquet(
         df=outputs["silver_weather_df"],
         output_path=paths["silver_weather_dir"],
         mode="overwrite",
         partition_cols=["weather_year", "weather_month"],
     )
-    logger.info("silver_weather_daily written to: %s", paths["silver_weather_dir"])
 
+    logger.info("silver_weather_daily written to: %s", paths["silver_weather_dir"])
     logger.info("Writing silver_zone_lookup parquet...")
+
     write_parquet(
         df=outputs["silver_zone_df"],
         output_path=paths["silver_zone_dir"],
         mode="overwrite",
         partition_cols=None,
     )
+
     logger.info("silver_zone_lookup written to: %s", paths["silver_zone_dir"])
 
 
-# =========================================================
-# 7) MAIN ORCHESTRATION
-# =========================================================
+# Flow bronze -> silver
 def run_bronze_to_silver() -> None:
-    """
-    Flow bronze -> silver:
-    1) load config
-    2) resolve paths
-    3) build spark
-    4) read bronze parquet
-    5) transform -> 3 silver base tables
-    6) log overview các output
-    7) write parquet
-    """
     config = load_app_config()
     paths = _resolve_paths(config)
 
@@ -504,6 +408,7 @@ def run_bronze_to_silver() -> None:
 
     try:
         logger.info("Reading bronze inputs...")
+
         bronze_inputs = read_all_bronze_inputs(
             spark=spark,
             paths=paths,
@@ -515,14 +420,17 @@ def run_bronze_to_silver() -> None:
         zone_bronze_df = bronze_inputs["zone_bronze_df"]
 
         logger.info("Transforming taxi bronze -> silver_taxi_trips...")
+
         silver_taxi_df = transform_taxi_to_silver(taxi_bronze_df)
         log_dataframe_overview(logger, "silver_taxi_trips", silver_taxi_df)
 
         logger.info("Transforming weather bronze -> silver_weather_daily...")
+        
         silver_weather_df = transform_weather_to_silver(weather_bronze_df)
         log_dataframe_overview(logger, "silver_weather_daily", silver_weather_df)
 
         logger.info("Transforming zone bronze -> silver_zone_lookup...")
+        
         silver_zone_df = transform_zone_to_silver(zone_bronze_df)
         log_dataframe_overview(logger, "silver_zone_lookup", silver_zone_df)
 
@@ -546,9 +454,6 @@ def run_bronze_to_silver() -> None:
         spark.stop()
 
 
-# =========================================================
-# 8) ENTRYPOINT
-# =========================================================
 def main() -> None:
     run_bronze_to_silver()
 

@@ -1,27 +1,5 @@
--- =========================================================
--- CHECK_SILVER.SQL
--- ---------------------------------------------------------
--- Portfolio-ready SQL checks for the Silver layer
---
--- Scope:
--- - silver_taxi_trips
--- - silver_weather_daily
--- - silver_zone_lookup
---
--- Purpose:
--- - confirm row counts and date coverage
--- - check key data quality rules
--- - verify partition/month coverage
--- - show a few analytics-ready sanity outputs
---
--- Run in DuckDB:
---   .read sql/checks/check_silver.sql
--- =========================================================
 
-
--- =========================================================
 -- 0) LOAD SILVER DATA AS VIEWS
--- =========================================================
 CREATE OR REPLACE VIEW silver_taxi_trips AS
 SELECT *
 FROM read_parquet(
@@ -44,13 +22,7 @@ FROM read_parquet(
 );
 
 
--- =========================================================
 -- 1) OVERVIEW
--- ---------------------------------------------------------
--- Quick health check:
--- - row count
--- - min / max date
--- =========================================================
 SELECT
     'silver_taxi_trips' AS dataset_name,
     COUNT(*) AS row_count,
@@ -79,12 +51,7 @@ FROM silver_zone_lookup
 ORDER BY dataset_name;
 
 
--- =========================================================
 -- 2) TAXI SILVER COVERAGE BY MONTH
--- ---------------------------------------------------------
--- Expectation:
--- - only 2023-01, 2023-02, 2023-03
--- =========================================================
 SELECT
     pickup_year,
     pickup_month,
@@ -98,12 +65,7 @@ ORDER BY
     pickup_month;
 
 
--- =========================================================
 -- 3) WEATHER SILVER COVERAGE BY MONTH
--- ---------------------------------------------------------
--- Expectation:
--- - only 2023-01, 2023-02, 2023-03
--- =========================================================
 SELECT
     weather_year,
     weather_month,
@@ -117,19 +79,8 @@ ORDER BY
     weather_month;
 
 
--- =========================================================
--- X) SILVER OUT-OF-SCOPE CHECKS
--- ---------------------------------------------------------
--- Purpose:
--- - bắt dữ liệu taxi / weather nằm ngoài phạm vi project
--- - phạm vi hợp lệ hiện tại: 2023-01-01 đến 2023-03-31
--- =========================================================
-
--- ---------------------------------------------------------
--- X.1) TAXI OUT-OF-SCOPE SUMMARY
--- Expected:
--- - tất cả phải = 0
--- ---------------------------------------------------------
+-- 4) SILVER OUT-OF-SCOPE CHECKS
+-- 4.1) TAXI OUT-OF-SCOPE SUMMARY
 SELECT
     SUM(
         CASE
@@ -147,12 +98,7 @@ SELECT
     ) AS out_of_scope_taxi_partition_rows
 FROM silver_taxi_trips;
 
-
--- ---------------------------------------------------------
--- X.2) TAXI OUT-OF-SCOPE DETAILS
--- Expected:
--- - trả về 0 dòng
--- ---------------------------------------------------------
+-- 4.2) TAXI OUT-OF-SCOPE DETAILS
 SELECT
     pickup_date,
     pickup_year,
@@ -172,12 +118,7 @@ ORDER BY
     pickup_year,
     pickup_month;
 
-
--- ---------------------------------------------------------
--- X.3) WEATHER OUT-OF-SCOPE SUMMARY
--- Expected:
--- - tất cả phải = 0
--- ---------------------------------------------------------
+-- 4.3) WEATHER OUT-OF-SCOPE SUMMARY
 SELECT
     SUM(
         CASE
@@ -196,11 +137,7 @@ SELECT
 FROM silver_weather_daily;
 
 
--- ---------------------------------------------------------
--- X.4) WEATHER OUT-OF-SCOPE DETAILS
--- Expected:
--- - trả về 0 dòng
--- ---------------------------------------------------------
+-- 4.4) WEATHER OUT-OF-SCOPE DETAILS
 SELECT
     weather_date,
     weather_year,
@@ -221,12 +158,7 @@ ORDER BY
     weather_month;
 
 
--- =========================================================
--- 4) TAXI CORE DATA QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all metrics should be 0
--- =========================================================
+-- 5) TAXI CORE DATA QUALITY CHECKS
 SELECT
     SUM(CASE WHEN trip_id IS NULL THEN 1 ELSE 0 END) AS trip_id_nulls,
     SUM(CASE WHEN pickup_datetime IS NULL THEN 1 ELSE 0 END) AS pickup_datetime_nulls,
@@ -248,12 +180,7 @@ SELECT
 FROM silver_taxi_trips;
 
 
--- =========================================================
--- 5) WEATHER CORE DATA QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all metrics should be 0
--- =========================================================
+-- 6) WEATHER CORE DATA QUALITY CHECKS
 SELECT
     SUM(CASE WHEN weather_date IS NULL THEN 1 ELSE 0 END) AS weather_date_nulls,
     SUM(CASE WHEN weather_year IS NULL THEN 1 ELSE 0 END) AS weather_year_nulls,
@@ -270,12 +197,7 @@ SELECT
 FROM silver_weather_daily;
 
 
--- =========================================================
--- 6) ZONE CORE DATA QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all metrics should be 0
--- =========================================================
+-- 7) ZONE CORE DATA QUALITY CHECKS
 SELECT
     SUM(CASE WHEN location_id IS NULL THEN 1 ELSE 0 END) AS location_id_nulls,
     SUM(CASE WHEN source_file IS NULL THEN 1 ELSE 0 END) AS source_file_nulls,
@@ -287,12 +209,7 @@ SELECT
 FROM silver_zone_lookup;
 
 
--- =========================================================
--- 7) UNIQUENESS CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all duplicate counters should be 0
--- =========================================================
+-- 8) UNIQUENESS CHECKS
 WITH taxi_dup AS (
     SELECT COUNT(*) AS duplicate_trip_id_rows
     FROM (
@@ -327,13 +244,7 @@ SELECT
 FROM taxi_dup, weather_dup, zone_dup;
 
 
--- =========================================================
--- 8) TAXI VS WEATHER DATE COVERAGE
--- ---------------------------------------------------------
--- Purpose:
--- - confirm taxi dates all fall inside the available weather scope
--- - useful before building Gold fact with weather FK
--- =========================================================
+-- 9) TAXI VS WEATHER DATE COVERAGE
 SELECT
     COUNT(*) AS taxi_dates_without_weather
 FROM (
@@ -345,13 +256,7 @@ FROM (
 );
 
 
--- =========================================================
--- 9) TAXI VS ZONE LOOKUP COVERAGE
--- ---------------------------------------------------------
--- Purpose:
--- - confirm pickup/dropoff location ids can be resolved in zone lookup
--- - useful before building Gold fact with zone FK
--- =========================================================
+-- 10) TAXI VS ZONE LOOKUP COVERAGE
 SELECT
     SUM(CASE WHEN p.location_id IS NULL THEN 1 ELSE 0 END) AS missing_pickup_zone_rows,
     SUM(CASE WHEN d.location_id IS NULL THEN 1 ELSE 0 END) AS missing_dropoff_zone_rows
@@ -362,11 +267,7 @@ LEFT JOIN silver_zone_lookup AS d
     ON t.dropoff_location_id = d.location_id;
 
 
--- =========================================================
--- 10) DAILY ANALYTICS SNAPSHOT
--- ---------------------------------------------------------
--- A compact downstream-ready view of Silver usability
--- =========================================================
+-- 11) DAILY ANALYTICS SNAPSHOT
 SELECT
     pickup_date,
     COUNT(*) AS trip_count,
@@ -379,11 +280,7 @@ ORDER BY pickup_date
 LIMIT 31;
 
 
--- =========================================================
--- 11) PAYMENT MIX SNAPSHOT
--- ---------------------------------------------------------
--- Simple sanity output before building serving marts
--- =========================================================
+-- 12) PAYMENT MIX SNAPSHOT
 SELECT
     pickup_date,
     payment_type_code,
@@ -400,12 +297,7 @@ ORDER BY
 LIMIT 50;
 
 
--- =========================================================
--- 12) TOP PICKUP LOCATION IDS
--- ---------------------------------------------------------
--- Silver chưa enrich zone text nữa, nên ở đây check theo ID.
--- Việc đổi sang borough/zone name sẽ làm ở Gold / Serving.
--- =========================================================
+-- 13) TOP PICKUP LOCATION IDS
 SELECT
     pickup_location_id,
     COUNT(*) AS trip_count,
@@ -416,11 +308,7 @@ ORDER BY trip_count DESC, total_revenue DESC
 LIMIT 15;
 
 
--- =========================================================
--- 13) WEATHER SNAPSHOT
--- ---------------------------------------------------------
--- Quick sanity output for weather daily dataset
--- =========================================================
+-- 14) WEATHER SNAPSHOT
 SELECT
     weather_date,
     temperature_mean,
@@ -433,11 +321,7 @@ ORDER BY weather_date
 LIMIT 31;
 
 
--- =========================================================
--- 14) ZONE LOOKUP SNAPSHOT
--- ---------------------------------------------------------
--- Quick sanity output for lookup dataset
--- =========================================================
+-- 15) ZONE LOOKUP SNAPSHOT
 SELECT
     location_id,
     borough,
