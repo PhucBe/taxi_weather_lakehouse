@@ -1,59 +1,13 @@
 from __future__ import annotations
-
-# =========================================================
-# validation_gold.py
-# ---------------------------------------------------------
-# Mục tiêu:
-# - Kiểm tra layer gold sau khi job Spark silver_to_gold chạy xong
-# - Gold hiện gồm 4 bảng semantic:
-#     + dim_date
-#     + dim_zone
-#     + dim_weather
-#     + fact_taxi_trips
-#
-# Validation bao gồm:
-# - kiểm tra path output có tồn tại không
-# - kiểm tra có file parquet thật hay không
-# - kiểm tra bộ cột có đúng như thiết kế không
-# - kiểm tra dataset không rỗng
-# - kiểm tra uniqueness theo grain
-# - kiểm tra not-null ở các cột cốt lõi
-# - kiểm tra logic business / derived columns
-# - kiểm tra foreign key coverage của fact sang dimensions
-# - kiểm tra reconciliation giữa silver_taxi_trips và fact_taxi_trips
-# - kiểm tra partition của fact_taxi_trips
-#
-# Triết lý:
-# - chạy thành công != dữ liệu gold đã sạch
-# - validation_gold phải chứng minh fact đủ tin cậy để làm đầu vào
-#   cho serving / marts / dashboard
-# =========================================================
-
 from pathlib import Path
 from typing import Any
-
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-
-# =========================================================
-# IMPORT CONFIG + LOGGER
-# ---------------------------------------------------------
-# Project của bạn từng có 2 kiểu:
-# - src.common.config / src.common.logger
-# - src.utils.config / src.utils.logger
-# Nên để fallback cho linh hoạt.
-# =========================================================
-try:
-    from src.common.config import load_app_config
-    from src.common.logger import get_logger
-except ImportError:  # pragma: no cover
-    from src.utils.config import load_app_config  # type: ignore
-    from src.utils.logger import get_logger  # type: ignore
+from src.common.config import load_app_config
+from src.common.logger import get_logger
 
 
-# =========================================================
-# 1) CONSTANTS - BỘ CỘT CHUẨN CỦA GOLD
-# =========================================================
+# CONSTANTS - BỘ CỘT CHUẨN CỦA GOLD
 EXPECTED_DIM_DATE_COLUMNS = [
     "date_day",
     "year_num",
@@ -118,26 +72,16 @@ EXPECTED_FACT_TAXI_COLUMNS = [
 ]
 
 
-# =========================================================
-# 2) HELPER FUNCTIONS
-# =========================================================
+# Chuyển mọi giá trị path thành Path object.
 def _as_path(value: Any) -> Path:
-    """
-    Chuyển mọi giá trị path thành Path object.
-    """
     if isinstance(value, Path):
         return value
+    
     return Path(str(value))
 
 
+# Resolve toàn bộ path cần dùng cho validation gold.
 def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
-    """
-    Resolve toàn bộ path cần dùng cho validation gold.
-
-    Bao gồm:
-    - input silver (để reconciliation)
-    - output gold
-    """
     paths_cfg = config["paths"]
 
     local_data_dir = _as_path(paths_cfg.get("local_data_dir", "data"))
@@ -151,12 +95,7 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     gold_dim_date_dir = _as_path(paths_cfg.get("gold_dim_date_dir", gold_dir / "dim_date"))
     gold_dim_zone_dir = _as_path(paths_cfg.get("gold_dim_zone_dir", gold_dir / "dim_zone"))
     gold_dim_weather_dir = _as_path(paths_cfg.get("gold_dim_weather_dir", gold_dir / "dim_weather"))
-    gold_fact_taxi_dir = _as_path(
-        paths_cfg.get(
-            "gold_fact_taxi_dir",
-            paths_cfg.get("gold_fact_taxi_trips_dir", gold_dir / "fact_taxi_trips"),
-        )
-    )
+    gold_fact_taxi_dir = _as_path(paths_cfg.get("gold_fact_taxi_dir", gold_dir / "fact_taxi_trips"))
 
     return {
         "silver_taxi_dir": silver_taxi_dir,
@@ -169,50 +108,39 @@ def _resolve_paths(config: dict[str, Any]) -> dict[str, Path]:
     }
 
 
+# Đảm bảo folder tồn tại và đúng là directory.
 def _require_existing_dir(path: Path, label: str) -> None:
-    """
-    Đảm bảo folder tồn tại và đúng là directory.
-    """
     if not path.exists():
         raise FileNotFoundError(f"{label} directory not found: {path}")
+    
     if not path.is_dir():
         raise ValueError(f"{label} exists but is not a directory: {path}")
 
 
+# Liệt kê toàn bộ file *.parquet bên trong 1 folder.
 def _list_parquet_files(path: Path) -> list[Path]:
-    """
-    Liệt kê toàn bộ file *.parquet bên trong 1 folder.
-    """
     return sorted(path.rglob("*.parquet"))
 
 
+# Đảm bảo folder có file parquet thật.
 def _assert_has_parquet_files(path: Path, label: str) -> list[Path]:
-    """
-    Đảm bảo folder có file parquet thật.
-    """
     parquet_files = _list_parquet_files(path)
+
     if not parquet_files:
         raise FileNotFoundError(f"No parquet files found in {label}: {path}")
+    
     return parquet_files
 
 
+# Kiểm tra DataFrame có đủ đúng các cột mong đợi hay không.
 def _assert_columns_match_by_name(
     df: DataFrame,
     expected_columns: list[str],
     dataset_name: str,
 ) -> None:
-    """
-    Kiểm tra DataFrame có đủ đúng các cột mong đợi hay không.
-
-    Lưu ý:
-    - KHÔNG kiểm tra thứ tự cột tuyệt đối
-    - vì parquet partitioned thường khiến Spark đưa cột partition ra cuối schema
-    """
     actual_columns = df.columns
-
     expected_set = set(expected_columns)
     actual_set = set(actual_columns)
-
     missing_columns = sorted(expected_set - actual_set)
     unexpected_columns = sorted(actual_set - expected_set)
 
@@ -226,25 +154,19 @@ def _assert_columns_match_by_name(
         )
 
 
+# Log schema ngắn gọn của DataFrame.
 def _log_schema(logger, dataset_name: str, df: DataFrame) -> None:
-    """
-    Log schema ngắn gọn của DataFrame.
-    """
     logger.info("[%s] columns=%s", dataset_name, ", ".join(df.columns))
     logger.info("[%s] schema=%s", dataset_name, df.schema.simpleString())
 
 
+# Đếm số dòng của DataFrame.
 def _count_rows(df: DataFrame) -> int:
-    """
-    Đếm số dòng của DataFrame.
-    """
     return df.count()
 
 
+# Tạo SparkSession cho job validation gold.
 def build_spark(app_name: str = "validation_gold") -> SparkSession:
-    """
-    Tạo SparkSession cho job validation gold.
-    """
     spark = (
         SparkSession.builder
         .appName(app_name)
@@ -256,18 +178,13 @@ def build_spark(app_name: str = "validation_gold") -> SparkSession:
     return spark
 
 
-# =========================================================
-# 3) READ SILVER / GOLD PARQUET
-# =========================================================
+# Đọc parquet dataset từ folder.
 def read_parquet_dataset(
     spark: SparkSession,
     dataset_path: Path,
     logger,
     label: str,
 ) -> DataFrame:
-    """
-    Đọc parquet dataset từ folder.
-    """
     _require_existing_dir(dataset_path, label)
     parquet_files = _assert_has_parquet_files(dataset_path, label)
 
@@ -277,22 +194,16 @@ def read_parquet_dataset(
     return spark.read.parquet(str(dataset_path))
 
 
-# =========================================================
-# 4) VALIDATION CHUNG
-# =========================================================
+# Dataset gold không được rỗng.
 def validate_non_empty(df: DataFrame, dataset_name: str) -> None:
-    """
-    Dataset gold không được rỗng.
-    """
     row_count = _count_rows(df)
+
     if row_count == 0:
         raise ValueError(f"[{dataset_name}] gold dataset is empty")
 
 
+# Kiểm tra key phải unique.
 def validate_unique_key(df: DataFrame, key_columns: list[str], dataset_name: str) -> None:
-    """
-    Kiểm tra key phải unique.
-    """
     duplicate_count = (
         df.groupBy(*key_columns)
         .count()
@@ -306,6 +217,7 @@ def validate_unique_key(df: DataFrame, key_columns: list[str], dataset_name: str
         )
 
 
+# Kiểm tra 2 dataset phải có row count bằng nhau.
 def validate_exact_row_count(
     left_df: DataFrame,
     right_df: DataFrame,
@@ -313,9 +225,6 @@ def validate_exact_row_count(
     right_name: str,
     logger,
 ) -> None:
-    """
-    Kiểm tra 2 dataset phải có row count bằng nhau.
-    """
     left_count = _count_rows(left_df)
     right_count = _count_rows(right_df)
 
@@ -328,21 +237,14 @@ def validate_exact_row_count(
         )
 
 
-# =========================================================
-# 5) DIM_DATE VALIDATION
-# =========================================================
+# Kiểm tra bộ cột dim_date đúng theo tên cột mong đợi.
 def validate_dim_date_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột dim_date đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_DIM_DATE_COLUMNS, "dim_date")
     _log_schema(logger, "dim_date", df)
 
 
+# Kiểm tra các cột cốt lõi của dim_date không được null.
 def validate_dim_date_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột cốt lõi của dim_date không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("date_day").isNull().cast("int")).alias("date_day_nulls"),
@@ -363,64 +265,50 @@ def validate_dim_date_not_null(df: DataFrame) -> None:
             raise ValueError(f"[dim_date] {field_name} must be 0 but got {value}")
 
 
+# dim_date phải unique theo date_day.
 def validate_dim_date_uniqueness(df: DataFrame) -> None:
-    """
-    dim_date phải unique theo date_day.
-    """
     validate_unique_key(df, ["date_day"], "dim_date")
 
 
+# Kiểm tra derived columns của dim_date.
 def validate_dim_date_logic(df: DataFrame) -> None:
-    """
-    Kiểm tra derived columns của dim_date.
-    """
-    invalid_year_count = (
-        df.filter(F.col("year_num") != F.year(F.col("date_day"))).count()
-    )
+    invalid_year_count = (df.filter(F.col("year_num") != F.year(F.col("date_day"))).count())
+
     if invalid_year_count != 0:
         raise ValueError(f"[dim_date] year_num mismatch found: {invalid_year_count}")
 
-    invalid_quarter_count = (
-        df.filter(F.col("quarter_num") != F.quarter(F.col("date_day"))).count()
-    )
+    invalid_quarter_count = (df.filter(F.col("quarter_num") != F.quarter(F.col("date_day"))).count())
+
     if invalid_quarter_count != 0:
         raise ValueError(f"[dim_date] quarter_num mismatch found: {invalid_quarter_count}")
 
-    invalid_month_count = (
-        df.filter(F.col("month_num") != F.month(F.col("date_day"))).count()
-    )
+    invalid_month_count = (df.filter(F.col("month_num") != F.month(F.col("date_day"))).count())
+
     if invalid_month_count != 0:
         raise ValueError(f"[dim_date] month_num mismatch found: {invalid_month_count}")
 
-    invalid_day_count = (
-        df.filter(F.col("day_num_in_month") != F.dayofmonth(F.col("date_day"))).count()
-    )
+    invalid_day_count = (df.filter(F.col("day_num_in_month") != F.dayofmonth(F.col("date_day"))).count())
+
     if invalid_day_count != 0:
         raise ValueError(f"[dim_date] day_num_in_month mismatch found: {invalid_day_count}")
 
-    invalid_dow_count = (
-        df.filter(F.col("day_of_week_num") != F.dayofweek(F.col("date_day"))).count()
-    )
+    invalid_dow_count = (df.filter(F.col("day_of_week_num") != F.dayofweek(F.col("date_day"))).count())
+
     if invalid_dow_count != 0:
         raise ValueError(f"[dim_date] day_of_week_num mismatch found: {invalid_dow_count}")
 
-    invalid_weekend_count = (
-        df.filter(
-            F.col("is_weekend") != F.col("day_of_week_num").isin([1, 7])
-        ).count()
-    )
+    invalid_weekend_count = (df.filter(F.col("is_weekend") != F.col("day_of_week_num").isin([1, 7])).count())
+
     if invalid_weekend_count != 0:
         raise ValueError(f"[dim_date] is_weekend mismatch found: {invalid_weekend_count}")
 
 
+# Kiểm tra dim_date có số ngày bằng số pickup_date distinct từ silver_taxi_trips.
 def validate_dim_date_matches_silver_taxi(
     dim_date_df: DataFrame,
     silver_taxi_df: DataFrame,
     logger,
 ) -> None:
-    """
-    Kiểm tra dim_date có số ngày bằng số pickup_date distinct từ silver_taxi_trips.
-    """
     expected_count = (
         silver_taxi_df
         .select("pickup_date")
@@ -440,21 +328,14 @@ def validate_dim_date_matches_silver_taxi(
         )
 
 
-# =========================================================
-# 6) DIM_ZONE VALIDATION
-# =========================================================
+# Kiểm tra bộ cột dim_zone đúng theo tên cột mong đợi.
 def validate_dim_zone_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột dim_zone đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_DIM_ZONE_COLUMNS, "dim_zone")
     _log_schema(logger, "dim_zone", df)
 
 
+# Kiểm tra các cột cốt lõi của dim_zone không được null.
 def validate_dim_zone_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột cốt lõi của dim_zone không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("location_id").isNull().cast("int")).alias("location_id_nulls"),
@@ -470,10 +351,8 @@ def validate_dim_zone_not_null(df: DataFrame) -> None:
             raise ValueError(f"[dim_zone] {field_name} must be 0 but got {value}")
 
 
+# Kiểm tra các cột string quan trọng không rỗng sau khi trim.
 def validate_dim_zone_string_quality(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột string quan trọng không rỗng sau khi trim.
-    """
     blank_counts = (
         df.select(
             F.sum((F.trim(F.col("borough")) == "").cast("int")).alias("blank_borough_rows"),
@@ -487,21 +366,17 @@ def validate_dim_zone_string_quality(df: DataFrame) -> None:
             raise ValueError(f"[dim_zone] {field_name} must be 0 but got {value}")
 
 
+# dim_zone phải unique theo location_id.
 def validate_dim_zone_uniqueness(df: DataFrame) -> None:
-    """
-    dim_zone phải unique theo location_id.
-    """
     validate_unique_key(df, ["location_id"], "dim_zone")
 
 
+# Kiểm tra dim_zone giữ nguyên row count so với silver_zone_lookup.
 def validate_dim_zone_matches_silver_zone(
     dim_zone_df: DataFrame,
     silver_zone_df: DataFrame,
     logger,
 ) -> None:
-    """
-    Kiểm tra dim_zone giữ nguyên row count so với silver_zone_lookup.
-    """
     validate_exact_row_count(
         left_df=silver_zone_df,
         right_df=dim_zone_df,
@@ -511,21 +386,14 @@ def validate_dim_zone_matches_silver_zone(
     )
 
 
-# =========================================================
-# 7) DIM_WEATHER VALIDATION
-# =========================================================
+# Kiểm tra bộ cột dim_weather đúng theo tên cột mong đợi.
 def validate_dim_weather_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột dim_weather đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_DIM_WEATHER_COLUMNS, "dim_weather")
     _log_schema(logger, "dim_weather", df)
 
 
+# Kiểm tra các cột cốt lõi của dim_weather không được null.
 def validate_dim_weather_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột cốt lõi của dim_weather không được null.
-    """
     null_counts = (
         df.select(
             F.sum(F.col("weather_date").isNull().cast("int")).alias("weather_date_nulls"),
@@ -545,25 +413,24 @@ def validate_dim_weather_not_null(df: DataFrame) -> None:
             raise ValueError(f"[dim_weather] {field_name} must be 0 but got {value}")
 
 
+# dim_weather phải unique theo weather_date.
 def validate_dim_weather_uniqueness(df: DataFrame) -> None:
-    """
-    dim_weather phải unique theo weather_date.
-    """
     validate_unique_key(df, ["weather_date"], "dim_weather")
 
 
+"""
+Kiểm tra cờ weather logic:
+- precipitation_sum > 0  <=> is_rainy_day = True
+- snowfall_sum > 0       <=> is_snowy_day = True
+"""
 def validate_dim_weather_logic(df: DataFrame) -> None:
-    """
-    Kiểm tra cờ weather logic:
-    - precipitation_sum > 0  <=> is_rainy_day = True
-    - snowfall_sum > 0       <=> is_snowy_day = True
-    """
     bad_rain_flag_count = (
         df.filter(
             ((F.col("precipitation_sum") > 0) & (F.col("is_rainy_day") == F.lit(False))) |
             ((F.col("precipitation_sum") <= 0) & (F.col("is_rainy_day") == F.lit(True)))
         ).count()
     )
+
     if bad_rain_flag_count != 0:
         raise ValueError(f"[dim_weather] is_rainy_day mismatch found: {bad_rain_flag_count}")
 
@@ -573,18 +440,17 @@ def validate_dim_weather_logic(df: DataFrame) -> None:
             ((F.col("snowfall_sum") <= 0) & (F.col("is_snowy_day") == F.lit(True)))
         ).count()
     )
+
     if bad_snow_flag_count != 0:
         raise ValueError(f"[dim_weather] is_snowy_day mismatch found: {bad_snow_flag_count}")
 
 
+# Kiểm tra dim_weather giữ nguyên row count so với silver_weather_daily.
 def validate_dim_weather_matches_silver_weather(
     dim_weather_df: DataFrame,
     silver_weather_df: DataFrame,
     logger,
 ) -> None:
-    """
-    Kiểm tra dim_weather giữ nguyên row count so với silver_weather_daily.
-    """
     validate_exact_row_count(
         left_df=silver_weather_df,
         right_df=dim_weather_df,
@@ -594,26 +460,14 @@ def validate_dim_weather_matches_silver_weather(
     )
 
 
-# =========================================================
-# 8) FACT_TAXI_TRIPS VALIDATION
-# =========================================================
+# Kiểm tra bộ cột fact_taxi_trips đúng theo tên cột mong đợi.
 def validate_fact_taxi_schema(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra bộ cột fact_taxi_trips đúng theo tên cột mong đợi.
-    """
     _assert_columns_match_by_name(df, EXPECTED_FACT_TAXI_COLUMNS, "fact_taxi_trips")
     _log_schema(logger, "fact_taxi_trips", df)
 
 
+# Kiểm tra các cột cốt lõi của fact_taxi_trips không được null.
 def validate_fact_taxi_not_null(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột cốt lõi của fact_taxi_trips không được null.
-
-    Lưu ý:
-    - Không ép tất cả degenerate dimensions phải non-null
-      (ví dụ vendor_id / rate_code_id / payment_type_code có thể phụ thuộc upstream)
-    - Nhưng các key cốt lõi, time columns và measures chính phải sạch
-    """
     null_counts = (
         df.select(
             F.sum(F.col("trip_id").isNull().cast("int")).alias("trip_id_nulls"),
@@ -646,23 +500,22 @@ def validate_fact_taxi_not_null(df: DataFrame) -> None:
             raise ValueError(f"[fact_taxi_trips] {field_name} must be 0 but got {value}")
 
 
+# fact_taxi_trips ở grain 1 trip nên trip_id phải unique.
 def validate_fact_taxi_uniqueness(df: DataFrame) -> None:
-    """
-    fact_taxi_trips ở grain 1 trip nên trip_id phải unique.
-    """
     validate_unique_key(df, ["trip_id"], "fact_taxi_trips")
 
 
+"""
+Kiểm tra logic thời gian của fact:
+- pickup < dropoff
+- trip_duration_minutes > 0
+- weather_date phải khớp pickup_date theo design hiện tại
+"""
 def validate_fact_taxi_time_logic(df: DataFrame) -> None:
-    """
-    Kiểm tra logic thời gian của fact:
-    - pickup < dropoff
-    - trip_duration_minutes > 0
-    - weather_date phải khớp pickup_date theo design hiện tại
-    """
     invalid_pickup_dropoff_count = (
         df.filter(F.col("pickup_datetime") >= F.col("dropoff_datetime")).count()
     )
+
     if invalid_pickup_dropoff_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] pickup_datetime >= dropoff_datetime found: "
@@ -672,6 +525,7 @@ def validate_fact_taxi_time_logic(df: DataFrame) -> None:
     invalid_duration_count = (
         df.filter(F.col("trip_duration_minutes") <= 0).count()
     )
+
     if invalid_duration_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] trip_duration_minutes <= 0 found: {invalid_duration_count}"
@@ -680,19 +534,19 @@ def validate_fact_taxi_time_logic(df: DataFrame) -> None:
     mismatched_weather_date_count = (
         df.filter(F.col("pickup_date") != F.col("weather_date")).count()
     )
+
     if mismatched_weather_date_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] pickup_date != weather_date found: {mismatched_weather_date_count}"
         )
 
 
+# Kiểm tra các cột dẫn xuất có khớp với pickup_date / pickup_datetime.
 def validate_fact_taxi_derived_columns(df: DataFrame) -> None:
-    """
-    Kiểm tra các cột dẫn xuất có khớp với pickup_date / pickup_datetime.
-    """
     invalid_year_count = (
         df.filter(F.col("pickup_year") != F.year(F.col("pickup_date"))).count()
     )
+
     if invalid_year_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] pickup_year mismatch found: {invalid_year_count}"
@@ -701,6 +555,7 @@ def validate_fact_taxi_derived_columns(df: DataFrame) -> None:
     invalid_month_count = (
         df.filter(F.col("pickup_month") != F.month(F.col("pickup_date"))).count()
     )
+
     if invalid_month_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] pickup_month mismatch found: {invalid_month_count}"
@@ -709,26 +564,19 @@ def validate_fact_taxi_derived_columns(df: DataFrame) -> None:
     invalid_hour_count = (
         df.filter(F.col("pickup_hour") != F.hour(F.col("pickup_datetime"))).count()
     )
+
     if invalid_hour_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] pickup_hour mismatch found: {invalid_hour_count}"
         )
 
 
+# Kiểm tra sanity của các measure trong fact.
 def validate_fact_taxi_measure_sanity(df: DataFrame, logger) -> None:
-    """
-    Kiểm tra sanity của các measure trong fact.
-
-    Hard fail:
-    - trip_distance < 0
-    - trip_duration_minutes <= 0
-
-    Warning:
-    - một số money columns âm (nếu có) để người dùng review thêm
-    """
     negative_distance_count = (
         df.filter(F.col("trip_distance") < 0).count()
     )
+
     if negative_distance_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] trip_distance < 0 found: {negative_distance_count}"
@@ -753,14 +601,12 @@ def validate_fact_taxi_measure_sanity(df: DataFrame, logger) -> None:
             logger.warning("[fact_taxi_trips] %s=%s", field_name, value)
 
 
+# Kiểm tra fact giữ nguyên grain và số dòng so với silver_taxi_trips.
 def validate_fact_taxi_matches_silver_taxi(
     fact_df: DataFrame,
     silver_taxi_df: DataFrame,
     logger,
 ) -> None:
-    """
-    Kiểm tra fact giữ nguyên grain và số dòng so với silver_taxi_trips.
-    """
     validate_exact_row_count(
         left_df=silver_taxi_df,
         right_df=fact_df,
@@ -770,16 +616,11 @@ def validate_fact_taxi_matches_silver_taxi(
     )
 
 
+# Kiểm tra tập trip_id của fact và silver phải giống nhau.
 def validate_fact_taxi_trip_id_set_matches_silver(
     fact_df: DataFrame,
     silver_taxi_df: DataFrame,
 ) -> None:
-    """
-    Kiểm tra tập trip_id của fact và silver phải giống nhau.
-
-    Điều này mạnh hơn chỉ so row count, vì row count bằng nhau
-    vẫn chưa chắc cùng đúng tập record.
-    """
     fact_trip_ids = fact_df.select("trip_id").distinct()
     silver_trip_ids = silver_taxi_df.select("trip_id").distinct()
 
@@ -788,6 +629,7 @@ def validate_fact_taxi_trip_id_set_matches_silver(
         .join(fact_trip_ids, on="trip_id", how="left_anti")
         .count()
     )
+
     if missing_in_fact_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] trip_ids missing in fact compared with silver_taxi_trips: "
@@ -799,6 +641,7 @@ def validate_fact_taxi_trip_id_set_matches_silver(
         .join(silver_trip_ids, on="trip_id", how="left_anti")
         .count()
     )
+
     if unexpected_in_fact_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] unexpected trip_ids found in fact compared with silver_taxi_trips: "
@@ -806,21 +649,13 @@ def validate_fact_taxi_trip_id_set_matches_silver(
         )
 
 
+# Kiểm tra fact có join đầy đủ được sang các dimension hay không.
 def validate_fact_taxi_fk_coverage(
     fact_df: DataFrame,
     dim_date_df: DataFrame,
     dim_zone_df: DataFrame,
     dim_weather_df: DataFrame,
 ) -> None:
-    """
-    Kiểm tra fact có join đầy đủ được sang các dimension hay không.
-
-    Rule:
-    - pickup_date phải resolve được vào dim_date.date_day
-    - pickup_location_id phải resolve được vào dim_zone.location_id
-    - dropoff_location_id phải resolve được vào dim_zone.location_id
-    - weather_date phải resolve được vào dim_weather.weather_date
-    """
     missing_date_fk_count = (
         fact_df.alias("f")
         .join(
@@ -831,6 +666,7 @@ def validate_fact_taxi_fk_coverage(
         .filter(F.col("d.date_day").isNull())
         .count()
     )
+
     if missing_date_fk_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] missing dim_date foreign key rows: {missing_date_fk_count}"
@@ -846,6 +682,7 @@ def validate_fact_taxi_fk_coverage(
         .filter(F.col("z.location_id").isNull())
         .count()
     )
+
     if missing_pickup_zone_fk_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] missing pickup dim_zone foreign key rows: {missing_pickup_zone_fk_count}"
@@ -861,6 +698,7 @@ def validate_fact_taxi_fk_coverage(
         .filter(F.col("z.location_id").isNull())
         .count()
     )
+
     if missing_dropoff_zone_fk_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] missing dropoff dim_zone foreign key rows: {missing_dropoff_zone_fk_count}"
@@ -876,18 +714,19 @@ def validate_fact_taxi_fk_coverage(
         .filter(F.col("w.weather_date").isNull())
         .count()
     )
+
     if missing_weather_fk_count != 0:
         raise ValueError(
             f"[fact_taxi_trips] missing dim_weather foreign key rows: {missing_weather_fk_count}"
         )
 
 
+"""
+Kiểm tra partition fact_taxi_trips:
+- có partition trong dữ liệu
+- có partition directory trên disk
+"""
 def validate_fact_taxi_partitions(df: DataFrame, gold_path: Path, logger) -> None:
-    """
-    Kiểm tra partition fact_taxi_trips:
-    - có partition trong dữ liệu
-    - có partition directory trên disk
-    """
     partition_rows = (
         df.select("pickup_year", "pickup_month")
         .distinct()
@@ -896,31 +735,22 @@ def validate_fact_taxi_partitions(df: DataFrame, gold_path: Path, logger) -> Non
     )
 
     partitions = [(row["pickup_year"], row["pickup_month"]) for row in partition_rows]
+
     logger.info("[fact_taxi_trips] distinct partitions=%s", partitions)
 
     if not partitions:
         raise ValueError("[fact_taxi_trips] no partitions found in dataframe")
 
     partition_dirs = sorted(gold_path.rglob("pickup_month=*"))
+
     if not partition_dirs:
         raise ValueError(f"[fact_taxi_trips] no partition directories found in {gold_path}")
 
     logger.info("[fact_taxi_trips] partition directory count=%s", len(partition_dirs))
 
 
-# =========================================================
-# 9) MAIN
-# =========================================================
+# Chạy toàn bộ validation gold theo thứ tự
 def main() -> None:
-    """
-    Chạy toàn bộ validation gold theo thứ tự:
-    - đọc silver sources để reconciliation
-    - đọc gold outputs
-    - validate dim_date
-    - validate dim_zone
-    - validate dim_weather
-    - validate fact_taxi_trips
-    """
     config = load_app_config()
     paths = _resolve_paths(config)
 
@@ -937,9 +767,7 @@ def main() -> None:
     spark = build_spark(app_name="validation_gold")
 
     try:
-        # -------------------------------------------------
         # READ SILVER SOURCES FOR RECONCILIATION
-        # -------------------------------------------------
         logger.info("Reading silver sources for reconciliation...")
 
         silver_taxi_df = read_parquet_dataset(
@@ -963,9 +791,7 @@ def main() -> None:
             label="silver_zone_lookup",
         )
 
-        # -------------------------------------------------
         # READ GOLD OUTPUTS
-        # -------------------------------------------------
         logger.info("Reading gold outputs...")
 
         dim_date_df = read_parquet_dataset(
@@ -996,9 +822,7 @@ def main() -> None:
             label="fact_taxi_trips",
         )
 
-        # -------------------------------------------------
         # DIM_DATE VALIDATION
-        # -------------------------------------------------
         logger.info("Validating dim_date...")
 
         validate_non_empty(dim_date_df, "dim_date")
@@ -1014,9 +838,7 @@ def main() -> None:
 
         logger.info("dim_date validation passed.")
 
-        # -------------------------------------------------
         # DIM_ZONE VALIDATION
-        # -------------------------------------------------
         logger.info("Validating dim_zone...")
 
         validate_non_empty(dim_zone_df, "dim_zone")
@@ -1032,9 +854,7 @@ def main() -> None:
 
         logger.info("dim_zone validation passed.")
 
-        # -------------------------------------------------
         # DIM_WEATHER VALIDATION
-        # -------------------------------------------------
         logger.info("Validating dim_weather...")
 
         validate_non_empty(dim_weather_df, "dim_weather")
@@ -1050,9 +870,7 @@ def main() -> None:
 
         logger.info("dim_weather validation passed.")
 
-        # -------------------------------------------------
         # FACT_TAXI_TRIPS VALIDATION
-        # -------------------------------------------------
         logger.info("Validating fact_taxi_trips...")
 
         validate_non_empty(fact_taxi_df, "fact_taxi_trips")
@@ -1093,8 +911,5 @@ def main() -> None:
         spark.stop()
 
 
-# =========================================================
-# 10) ENTRYPOINT
-# =========================================================
 if __name__ == "__main__":
     main()
