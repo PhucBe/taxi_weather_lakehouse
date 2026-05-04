@@ -21,20 +21,21 @@ paths:
   bronze_zone_dir: data/bronze/zone_lookup
 
   silver_dir: data/silver
-  silver_taxi_clean_dir: data/silver/taxi_trips_clean
+  silver_taxi_dir: data/silver/taxi_trips
   silver_weather_dir: data/silver/weather_daily
   silver_zone_dir: data/silver/zone_lookup
 
   gold_dir: data/gold
-  gold_daily_zone_demand_dir: data/gold/daily_zone_demand
-  gold_daily_payment_mix_dir: data/gold/daily_payment_mix
-  gold_weather_impact_daily_dir: data/gold/weather_impact_daily
+  gold_dim_date_dir: data/gold/dim_date
+  gold_dim_zone_dir: data/gold/dim_zone
+  gold_dim_weather_dir: data/gold/dim_weather
+  gold_fact_taxi_dir: data/gold/fact_taxi_trips
 
   serving_dir: data/serving
-  serving_export_dir: data/serving/
-  serving_fact_taxi_trips_base_dir: data/serving/fact_taxi_trips_base
-  serving_zone_dim_base_dir: data/serving/zone_dim_base
-  serving_weather_daily_base_dir: data/serving/weather_daily_base
+  serving_mart_daily_demand_dir: data/serving/mart_daily_demand
+  serving_mart_daily_payment_mix_dir: data/serving/mart_daily_payment_mix
+  serving_mart_weather_impact_dir: data/serving/mart_weather_impact
+  serving_mart_zone_demand_dir: data/serving/mart_zone_demand
 
   log_dir: logs
 

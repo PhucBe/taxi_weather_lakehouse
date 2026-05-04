@@ -1,36 +1,4 @@
--- =========================================================
--- CHECK_SERVING.SQL
--- ---------------------------------------------------------
--- Portfolio-ready SQL checks for the Serving layer
---
--- Scope:
--- - mart_daily_demand
--- - mart_daily_payment_mix
--- - mart_weather_impact
--- - mart_zone_demand
---
--- Reconciliation sources:
--- - dim_date
--- - dim_zone
--- - dim_weather
--- - fact_taxi_trips
---
--- Purpose:
--- - confirm row counts and date coverage
--- - check uniqueness and not-null rules
--- - verify reconciliation with gold fact
--- - verify descriptor consistency with dimensions
--- - verify payment mix share logic
--- - show business-ready snapshot outputs for BI
---
--- Run in DuckDB:
---   .read sql/check/check_serving.sql
--- =========================================================
-
-
--- =========================================================
 -- 0) LOAD GOLD + SERVING DATA AS VIEWS
--- =========================================================
 CREATE OR REPLACE VIEW dim_date AS
 SELECT *
 FROM read_parquet(
@@ -88,13 +56,7 @@ FROM read_parquet(
 );
 
 
--- =========================================================
 -- 1) OVERVIEW
--- ---------------------------------------------------------
--- Quick health check:
--- - row count
--- - min / max date where applicable
--- =========================================================
 SELECT
     'mart_daily_demand' AS dataset_name,
     COUNT(*) AS row_count,
@@ -132,12 +94,7 @@ FROM mart_zone_demand
 ORDER BY dataset_name;
 
 
--- =========================================================
 -- 2) SERVING COVERAGE BY MONTH
--- ---------------------------------------------------------
--- Expectation:
--- - only 2023-01, 2023-02, 2023-03
--- =========================================================
 SELECT
     'mart_daily_demand' AS dataset_name,
     pickup_year,
@@ -179,17 +136,7 @@ GROUP BY pickup_year, pickup_month
 ORDER BY dataset_name, pickup_year, pickup_month;
 
 
--- =========================================================
 -- 3) OUT-OF-SCOPE CHECKS
--- ---------------------------------------------------------
--- Purpose:
--- - bắt dữ liệu serving nằm ngoài phạm vi project
--- - phạm vi hợp lệ hiện tại: 2023-01-01 đến 2023-03-31
--- Expected:
--- - tất cả summary phải = 0
--- - các query detail phải trả về 0 dòng
--- =========================================================
-
 -- 3.1) SUMMARY
 SELECT
     SUM(CASE WHEN pickup_date < DATE '2023-01-01' OR pickup_date > DATE '2023-03-31' THEN 1 ELSE 0 END) AS daily_demand_out_of_scope_rows
@@ -249,12 +196,7 @@ GROUP BY pickup_date
 ORDER BY pickup_date;
 
 
--- =========================================================
 -- 4) MART_DAILY_DEMAND QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all quality metrics should be 0
--- =========================================================
 SELECT
     SUM(CASE WHEN pickup_date IS NULL THEN 1 ELSE 0 END) AS pickup_date_nulls,
     SUM(CASE WHEN pickup_year IS NULL THEN 1 ELSE 0 END) AS pickup_year_nulls,
@@ -277,13 +219,7 @@ SELECT
 FROM mart_daily_demand;
 
 
--- =========================================================
 -- 5) MART_DAILY_PAYMENT_MIX QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - core quality metrics should be 0
--- - revenue share out-of-range may happen on adjustment-heavy days
--- =========================================================
 SELECT
     SUM(CASE WHEN pickup_date IS NULL THEN 1 ELSE 0 END) AS pickup_date_nulls,
     SUM(CASE WHEN pickup_year IS NULL THEN 1 ELSE 0 END) AS pickup_year_nulls,
@@ -303,12 +239,7 @@ SELECT
 FROM mart_daily_payment_mix;
 
 
--- =========================================================
 -- 6) MART_WEATHER_IMPACT QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all quality metrics should be 0
--- =========================================================
 SELECT
     SUM(CASE WHEN pickup_date IS NULL THEN 1 ELSE 0 END) AS pickup_date_nulls,
     SUM(CASE WHEN pickup_year IS NULL THEN 1 ELSE 0 END) AS pickup_year_nulls,
@@ -332,12 +263,7 @@ SELECT
 FROM mart_weather_impact;
 
 
--- =========================================================
 -- 7) MART_ZONE_DEMAND QUALITY CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all quality metrics should be 0
--- =========================================================
 SELECT
     SUM(CASE WHEN pickup_date IS NULL THEN 1 ELSE 0 END) AS pickup_date_nulls,
     SUM(CASE WHEN pickup_year IS NULL THEN 1 ELSE 0 END) AS pickup_year_nulls,
@@ -359,12 +285,7 @@ SELECT
 FROM mart_zone_demand;
 
 
--- =========================================================
 -- 8) UNIQUENESS CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - all duplicate counters should be 0
--- =========================================================
 WITH daily_demand_dup AS (
     SELECT COUNT(*) AS duplicate_pickup_date_rows
     FROM (
@@ -409,13 +330,7 @@ SELECT
 FROM daily_demand_dup, payment_mix_dup, weather_impact_dup, zone_demand_dup;
 
 
--- =========================================================
 -- 9) DATE / WEATHER / ZONE DESCRIPTOR CONSISTENCY
--- ---------------------------------------------------------
--- Expectation:
--- - all metrics should be 0
--- =========================================================
-
 -- 9.1) mart_daily_demand vs dim_date
 SELECT
     COUNT(*) AS mart_daily_demand_date_mismatch_rows
@@ -464,13 +379,7 @@ WHERE z.location_id IS NULL
    OR m.service_zone <> z.service_zone;
 
 
--- =========================================================
 -- 10) RECONCILIATION WITH FACT
--- ---------------------------------------------------------
--- Expectation:
--- - trip_count / revenue / negative trip counts should reconcile
--- =========================================================
-
 -- 10.1) mart_daily_demand
 SELECT
     ROUND((SELECT SUM(trip_count) FROM mart_daily_demand), 2) AS mart_daily_demand_trip_count_sum,
@@ -506,12 +415,7 @@ SELECT
     ROUND((SELECT COUNT(*) FROM fact_taxi_trips WHERE total_amount < 0), 2) AS fact_negative_trip_count;
 
 
--- =========================================================
 -- 11) MART ROW COUNT RECONCILIATION
--- ---------------------------------------------------------
--- Expectation:
--- - row counts must match expected distinct grain from fact
--- =========================================================
 SELECT
     (SELECT COUNT(*) FROM mart_daily_demand) AS mart_daily_demand_row_count,
     (
@@ -555,14 +459,7 @@ SELECT
     ) AS expected_zone_demand_row_count;
 
 
--- =========================================================
 -- 12) PAYMENT MIX SHARE CHECKS
--- ---------------------------------------------------------
--- Expectation:
--- - trip share sum by day ~= 1
--- - revenue share sum by day ~= 1 on non-zero-revenue days
--- =========================================================
-
 -- 12.1) trip share sums
 SELECT
     pickup_date,
@@ -595,9 +492,7 @@ ORDER BY pickup_date, payment_type_code
 LIMIT 40;
 
 
--- =========================================================
 -- 13) BUSINESS SNAPSHOT - MART_DAILY_DEMAND
--- =========================================================
 SELECT
     pickup_date,
     trip_count,
@@ -610,9 +505,7 @@ ORDER BY pickup_date
 LIMIT 31;
 
 
--- =========================================================
 -- 14) BUSINESS SNAPSHOT - MART_DAILY_PAYMENT_MIX
--- =========================================================
 SELECT
     pickup_date,
     payment_type_code,
@@ -626,9 +519,7 @@ ORDER BY pickup_date, trip_count DESC, payment_type_code
 LIMIT 50;
 
 
--- =========================================================
 -- 15) BUSINESS SNAPSHOT - MART_WEATHER_IMPACT
--- =========================================================
 SELECT
     pickup_date,
     is_rainy_day,
@@ -645,9 +536,7 @@ ORDER BY pickup_date
 LIMIT 31;
 
 
--- =========================================================
 -- 16) BUSINESS SNAPSHOT - MART_ZONE_DEMAND
--- =========================================================
 SELECT
     pickup_date,
     pickup_location_id,
@@ -661,9 +550,7 @@ ORDER BY pickup_date, trip_count DESC
 LIMIT 50;
 
 
--- =========================================================
 -- 17) TOP ZONES - FULL PERIOD
--- =========================================================
 SELECT
     pickup_location_id,
     borough,
@@ -680,12 +567,7 @@ ORDER BY trip_count DESC, total_revenue DESC
 LIMIT 20;
 
 
--- =========================================================
 -- 18) NEGATIVE TOTAL AMOUNT PROFILE
--- ---------------------------------------------------------
--- Business review query:
--- - phục vụ xem adjustment / refund / anomaly ở serving layer
--- =========================================================
 SELECT
     pickup_date,
     negative_total_amount_trip_count,

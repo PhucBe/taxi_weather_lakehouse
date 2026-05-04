@@ -1,26 +1,4 @@
--- =========================================================
--- CHECK_SERVING_REDSHIFT_MIN.SQL
--- ---------------------------------------------------------
--- Compact warehouse-side checks for serving tables in Redshift
---
--- Scope:
--- - serving.mart_daily_demand
--- - serving.mart_daily_payment_mix
--- - serving.mart_weather_impact
--- - serving.mart_zone_demand
---
--- Goal:
--- - row count / date coverage
--- - out-of-scope rows
--- - null / duplicate checks
--- - cross-mart reconciliation
--- - payment share sanity
--- =========================================================
-
-
--- =========================================================
 -- 1) OVERVIEW
--- =========================================================
 SELECT
     'mart_daily_demand' AS dataset_name,
     COUNT(*) AS row_count,
@@ -58,9 +36,7 @@ FROM serving.mart_zone_demand
 ORDER BY dataset_name;
 
 
--- =========================================================
 -- 2) MONTH COVERAGE
--- =========================================================
 SELECT
     'mart_daily_demand' AS dataset_name,
     pickup_year,
@@ -102,10 +78,7 @@ GROUP BY pickup_year, pickup_month
 ORDER BY dataset_name, pickup_year, pickup_month;
 
 
--- =========================================================
 -- 3) OUT-OF-SCOPE SUMMARY
--- Expected: all = 0
--- =========================================================
 SELECT
     SUM(CASE WHEN pickup_date < DATE '2023-01-01' OR pickup_date > DATE '2023-03-31' THEN 1 ELSE 0 END) AS daily_demand_out_of_scope_rows
 FROM serving.mart_daily_demand;
@@ -124,10 +97,7 @@ SELECT
 FROM serving.mart_zone_demand;
 
 
--- =========================================================
 -- 4) CORE NULL / QUALITY CHECKS
--- Expected: all = 0
--- =========================================================
 SELECT
     SUM(CASE WHEN pickup_date IS NULL THEN 1 ELSE 0 END) AS pickup_date_nulls,
     SUM(CASE WHEN trip_count IS NULL THEN 1 ELSE 0 END) AS trip_count_nulls,
@@ -168,10 +138,7 @@ SELECT
 FROM serving.mart_zone_demand;
 
 
--- =========================================================
 -- 5) DUPLICATE GRAIN CHECKS
--- Expected: all = 0
--- =========================================================
 WITH daily_demand_dup AS (
     SELECT COUNT(*) AS duplicate_pickup_date_rows
     FROM (
@@ -216,12 +183,7 @@ SELECT
 FROM daily_demand_dup, payment_mix_dup, weather_impact_dup, zone_demand_dup;
 
 
--- =========================================================
 -- 6) CROSS-MART RECONCILIATION
--- Expected:
--- - mismatch counts = 0
--- =========================================================
-
 -- 6.1) daily_demand vs weather_impact
 SELECT
     COUNT(*) AS daily_vs_weather_mismatch_rows
@@ -275,11 +237,7 @@ WHERE d.pickup_date IS NULL
    OR d.negative_total_amount_trip_count <> z.negative_trip_count_sum;
 
 
--- =========================================================
 -- 7) PAYMENT SHARE CHECKS
--- Expected:
--- - both queries return 0 rows
--- =========================================================
 SELECT
     pickup_date,
     ROUND(SUM(payment_trip_share_pct), 6) AS trip_share_sum
@@ -299,9 +257,7 @@ HAVING ABS(SUM(total_revenue)) > 0.01
 ORDER BY pickup_date;
 
 
--- =========================================================
 -- 8) SNAPSHOT FOR QUICK REVIEW
--- =========================================================
 SELECT
     pickup_date,
     trip_count,
