@@ -847,9 +847,7 @@ def main() -> None:
         validate_partition_columns(df=mart_weather_impact_df, dataset_name="mart_weather_impact", output_path=paths["serving_mart_weather_impact_dir"], logger=logger)
         logger.info("mart_weather_impact validation passed.")
 
-        # -------------------------------------------------
         # MART_ZONE_DEMAND VALIDATION
-        # -------------------------------------------------
         logger.info("Validating mart_zone_demand...")
         validate_non_empty(mart_zone_demand_df, "mart_zone_demand")
         validate_mart_zone_demand_schema(mart_zone_demand_df, logger)

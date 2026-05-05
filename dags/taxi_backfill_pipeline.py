@@ -1,34 +1,13 @@
 from __future__ import annotations
-
-# =========================================================
-# taxi_backfill_pipeline.py
-# ---------------------------------------------------------
-# Mục tiêu:
-# - Orchestrate manual backfill pipeline của Project 2
-# - Flow giống daily pipeline nhưng chỉ chạy khi trigger tay
-# - Hỗ trợ truyền params:
-#     + load_date
-#     + year_months
-#     + force_full_refresh
-#
-# Lưu ý:
-# - Pipeline hiện tại chắc chắn đã đọc LOAD_DATE từ env ở run_ingestion.py
-# - YEAR_MONTHS / FORCE_FULL_REFRESH được truyền qua env để đồng bộ runtime
-# - Nếu muốn backfill theo year_months thật sự ở ingestion/transform,
-#   upstream scripts cần hỗ trợ override config từ env hoặc dag_run.conf
-# =========================================================
-
 import importlib.util
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-
 import pendulum
 from airflow import DAG
 from airflow.exceptions import AirflowFailException
 from airflow.operators.python import PythonOperator
 from airflow.utils.log.logging_mixin import LoggingMixin
-
 from helpers.airflow_common import (
     DEFAULT_EXECUTION_TIMEOUT_MINUTES,
     DEFAULT_POOL_REDSHIFT,
@@ -49,18 +28,15 @@ from helpers.airflow_common import (
     normalize_year_months,
     patched_environ,
 )
+from src.common.config import load_app_config
+from src.common.logger import get_logger
 
-# =========================================================
 # 1) DAG METADATA
-# =========================================================
 DAG_ID = "taxi_backfill_pipeline"
 DAG_DESCRIPTION = "Manual backfill pipeline for NYC taxi + weather project from raw ingestion to Redshift serving."
 
 PROJECT_ROOT = Path("/opt/airflow/project")
 
-# Backfill DAG:
-# - không schedule
-# - chỉ manual trigger từ UI / API
 SCHEDULE = None
 
 START_DATE = pendulum.datetime(2026, 4, 1, tz=PROJECT_TIMEZONE)
@@ -77,9 +53,7 @@ TAGS = [
 ]
 
 
-# =========================================================
 # 2) FILE CANDIDATES
-# =========================================================
 RUN_INGESTION_CANDIDATES = [
     "src/ingestion/run_ingestion.py",
 ]
@@ -125,15 +99,11 @@ EXPORT_SERVING_CANDIDATES = [
 ]
 
 
-# =========================================================
-# 3) HELPER FUNCTIONS
-# =========================================================
+# Resolve file path đầu tiên tồn tại trong candidate list.
 def _resolve_existing_file(candidate_paths: list[str]) -> Path:
-    """
-    Resolve file path đầu tiên tồn tại trong candidate list.
-    """
     for relative_path in candidate_paths:
         path = PROJECT_ROOT / relative_path
+
         if path.exists() and path.is_file():
             return path
 
@@ -143,10 +113,8 @@ def _resolve_existing_file(candidate_paths: list[str]) -> Path:
     )
 
 
+# Import module động từ file path.
 def _import_module_from_file(file_path: Path):
-    """
-    Import module động từ file path.
-    """
     module_name = f"airflow_runtime_{file_path.stem}_{abs(hash(str(file_path)))}"
     spec = importlib.util.spec_from_file_location(module_name, str(file_path))
 
@@ -155,16 +123,12 @@ def _import_module_from_file(file_path: Path):
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
     return module
 
 
-def _import_callable_from_candidates(
-    candidate_paths: list[str],
-    callable_name: str,
-):
-    """
-    Import 1 callable từ file path candidates.
-    """
+# Import 1 callable từ file path candidates.
+def _import_callable_from_candidates(candidate_paths: list[str], callable_name: str):
     file_path = _resolve_existing_file(candidate_paths)
     module = _import_module_from_file(file_path)
 
@@ -183,32 +147,19 @@ def _import_callable_from_candidates(
     return fn, file_path
 
 
+# Import load_app_config + get_logger theo fallback giống codebase hiện tại.
 def _load_project_config_and_logger(logger_name: str):
-    """
-    Import load_app_config + get_logger theo fallback giống codebase hiện tại.
-    """
-    try:
-        from src.common.config import load_app_config
-        from src.common.logger import get_logger
-    except ImportError:  # pragma: no cover
-        from src.utils.config import load_app_config  # type: ignore
-        from src.utils.logger import get_logger  # type: ignore
-
     config = load_app_config()
     logger = get_logger(
         name=logger_name,
         log_dir=config["paths"]["log_dir"],
     )
+
     return config, logger
 
 
-def _run_file_entrypoint(
-    candidate_paths: list[str],
-    callable_name: str = "main",
-) -> Any:
-    """
-    Chạy 1 entrypoint kiểu main() từ file Python trong project.
-    """
+# Chạy 1 entrypoint kiểu main() từ file Python trong project.
+def _run_file_entrypoint(candidate_paths: list[str], callable_name: str = "main") -> Any:
     runtime = log_runtime_config()
     logger = LoggingMixin().log
 
@@ -232,10 +183,8 @@ def _run_file_entrypoint(
         return fn()
 
 
+# Chạy đúng 1 hàm export mart từ export_serving.py.
 def _run_export_serving_callable(export_callable_name: str) -> None:
-    """
-    Chạy đúng 1 hàm export mart từ export_serving.py.
-    """
     runtime = log_runtime_config()
     airflow_logger = LoggingMixin().log
 
@@ -261,6 +210,7 @@ def _run_export_serving_callable(export_callable_name: str) -> None:
         export_fn(config=config, logger=logger)
 
 
+# Factory nhỏ để tạo PythonOperator đồng bộ style.
 def _build_standard_python_task(
     task_id: str,
     python_callable,
@@ -273,9 +223,6 @@ def _build_standard_python_task(
     doc_md: str | None = None,
     dag: DAG | None = None,
 ) -> PythonOperator:
-    """
-    Factory nhỏ để tạo PythonOperator đồng bộ style.
-    """
     return PythonOperator(
         task_id=task_id,
         python_callable=python_callable,
@@ -290,22 +237,11 @@ def _build_standard_python_task(
     )
 
 
+# Validate/log request backfill trước khi pipeline chạy.
 def validate_backfill_request() -> None:
-    """
-    Validate/log request backfill trước khi pipeline chạy.
-
-    Rule mềm:
-    - load_date luôn được normalize từ helper
-    - year_months có thể rỗng: khi đó pipeline có thể fallback về config prototype
-    - nếu user truyền year_months, validate định dạng YYYY-MM
-
-    Rule cứng:
-    - nếu year_months truyền vào nhưng sai format -> fail sớm
-    """
     logger = LoggingMixin().log
     runtime = get_runtime_config()
 
-    # validate lại để fail sớm và log rõ
     year_months = normalize_year_months(runtime["year_months"])
 
     logger.info("=" * 80)
@@ -328,9 +264,7 @@ def validate_backfill_request() -> None:
     logger.info("=" * 80)
 
 
-# =========================================================
 # 4) DAG DEFINITION
-# =========================================================
 with DAG(
     dag_id=DAG_ID,
     description=DAG_DESCRIPTION,
@@ -375,9 +309,7 @@ with DAG(
     Schedule: **manual only**
     """,
 ) as dag:
-    # -----------------------------------------------------
     # START / END
-    # -----------------------------------------------------
     start = build_empty_task(
         task_id="start",
         doc_md="### Start\nĐiểm bắt đầu của backfill pipeline.",
@@ -390,9 +322,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # REQUEST VALIDATION
-    # -----------------------------------------------------
     validate_backfill_request_task = _build_standard_python_task(
         task_id="validate_backfill_request",
         python_callable=validate_backfill_request,
@@ -406,9 +336,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # RAW LAYER
-    # -----------------------------------------------------
     raw_ingestion = _build_standard_python_task(
         task_id="raw_ingestion",
         python_callable=_run_file_entrypoint,
@@ -443,9 +371,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # BRONZE LAYER
-    # -----------------------------------------------------
     raw_to_bronze = _build_standard_python_task(
         task_id="raw_to_bronze",
         python_callable=_run_file_entrypoint,
@@ -474,9 +400,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # SILVER LAYER
-    # -----------------------------------------------------
     bronze_to_silver = _build_standard_python_task(
         task_id="bronze_to_silver",
         python_callable=_run_file_entrypoint,
@@ -505,9 +429,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # GOLD LAYER
-    # -----------------------------------------------------
     silver_to_gold = _build_standard_python_task(
         task_id="silver_to_gold",
         python_callable=_run_file_entrypoint,
@@ -536,9 +458,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # SERVING LAYER
-    # -----------------------------------------------------
     gold_to_serving = _build_standard_python_task(
         task_id="gold_to_serving",
         python_callable=_run_file_entrypoint,
@@ -567,9 +487,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # EXPORT SERVING -> REDSHIFT
-    # -----------------------------------------------------
     export_mart_daily_demand = _build_standard_python_task(
         task_id="export_mart_daily_demand",
         python_callable=_run_export_serving_callable,
@@ -630,9 +548,7 @@ with DAG(
         dag=dag,
     )
 
-    # -----------------------------------------------------
     # DEPENDENCIES
-    # -----------------------------------------------------
     start >> validate_backfill_request_task
     validate_backfill_request_task >> raw_ingestion
     raw_ingestion >> validation_raw
